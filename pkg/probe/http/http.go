@@ -20,42 +20,34 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"time"
 
-	utilnet "k8s.io/apimachinery/pkg/util/net"
-	"k8s.io/component-base/version"
-	"k8s.io/kubernetes/pkg/probe"
-
-	"k8s.io/klog/v2"
-	utilio "k8s.io/utils/io"
+	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 const (
 	maxRespBodyLength = 10 * 1 << 10 // 10KB
 )
 
-// New creates Prober that will skip TLS verification while probing.
-// followNonLocalRedirects configures whether the prober should follow redirects to a different hostname.
-//   If disabled, redirects to other hosts will trigger a warning result.
-func New(followNonLocalRedirects bool) Prober {
-	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-	return NewWithTLSConfig(tlsConfig, followNonLocalRedirects)
+// ErrLimitReached means that the read limit is reached.
+var ErrLimitReached = errors.New("the read limit is reached")
+
+func defaultTransport() *http.Transport {
+	// TODO(milas): add http2 healthcheck -> https://github.com/kubernetes/apimachinery/blob/master/pkg/util/net/http.go#L173-L189
+	return &http.Transport{
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		DisableKeepAlives: true,
+		Proxy:             http.ProxyURL(nil),
+	}
 }
 
-// NewWithTLSConfig takes tls config as parameter.
-// followNonLocalRedirects configures whether the prober should follow redirects to a different hostname.
-//   If disabled, redirects to other hosts will trigger a warning result.
-func NewWithTLSConfig(config *tls.Config, followNonLocalRedirects bool) Prober {
-	// We do not want the probe use node's local proxy set.
-	transport := utilnet.SetTransportDefaults(
-		&http.Transport{
-			TLSClientConfig:   config,
-			DisableKeepAlives: true,
-			Proxy:             http.ProxyURL(nil),
-		})
-	return httpProber{transport, followNonLocalRedirects}
+// New creates Prober that will skip TLS verification while probing.
+func New() Prober {
+	return httpProber{defaultTransport()}
 }
 
 // Prober is an interface that defines the Probe function for doing HTTP readiness/liveness checks.
@@ -64,8 +56,7 @@ type Prober interface {
 }
 
 type httpProber struct {
-	transport               *http.Transport
-	followNonLocalRedirects bool
+	transport *http.Transport
 }
 
 // Probe returns a ProbeRunner capable of running an HTTP check.
@@ -74,7 +65,7 @@ func (pr httpProber) Probe(url *url.URL, headers http.Header, timeout time.Durat
 	client := &http.Client{
 		Timeout:       timeout,
 		Transport:     pr.transport,
-		CheckRedirect: redirectChecker(pr.followNonLocalRedirects),
+		CheckRedirect: redirectChecker(),
 	}
 	return DoHTTPProbe(url, headers, client)
 }
@@ -98,9 +89,9 @@ func DoHTTPProbe(url *url.URL, headers http.Header, client GetHTTPInterface) (pr
 		if headers == nil {
 			headers = http.Header{}
 		}
+		// TODO(milas): add version support to package
 		// explicitly set User-Agent so it's not set to default Go value
-		v := version.Get()
-		headers.Set("User-Agent", fmt.Sprintf("kube-probe/%s.%s", v.Major, v.Minor))
+		headers.Set("User-Agent", fmt.Sprintf("tilt-probe/%s.%s", "0", "1"))
 	}
 	if _, ok := headers["Accept"]; !ok {
 		// Accept header was not defined. accept all
@@ -117,32 +108,24 @@ func DoHTTPProbe(url *url.URL, headers http.Header, client GetHTTPInterface) (pr
 		return probe.Failure, err.Error(), nil
 	}
 	defer res.Body.Close()
-	b, err := utilio.ReadAtMost(res.Body, maxRespBodyLength)
-	if err != nil {
-		if err == utilio.ErrLimitReached {
-			klog.V(4).Infof("Non fatal body truncation for %s, Response: %v", url.String(), *res)
-		} else {
-			return probe.Failure, "", err
-		}
+	b, err := readAtMost(res.Body, maxRespBodyLength)
+	if err != nil && err != ErrLimitReached {
+		return probe.Failure, "", err
 	}
 	body := string(b)
 	if res.StatusCode >= http.StatusOK && res.StatusCode < http.StatusBadRequest {
 		if res.StatusCode >= http.StatusMultipleChoices { // Redirect
-			klog.V(4).Infof("Probe terminated redirects for %s, Response: %v", url.String(), *res)
+			// klog.V(4).Infof("Probe terminated redirects for %s, Response: %v", url.String(), *res)
 			return probe.Warning, body, nil
 		}
-		klog.V(4).Infof("Probe succeeded for %s, Response: %v", url.String(), *res)
+		// klog.V(4).Infof("Probe succeeded for %s, Response: %v", url.String(), *res)
 		return probe.Success, body, nil
 	}
-	klog.V(4).Infof("Probe failed for %s with request headers %v, response body: %v", url.String(), headers, body)
+	// klog.V(4).Infof("Probe failed for %s with request headers %v, response body: %v", url.String(), headers, body)
 	return probe.Failure, fmt.Sprintf("HTTP probe failed with statuscode: %d", res.StatusCode), nil
 }
 
-func redirectChecker(followNonLocalRedirects bool) func(*http.Request, []*http.Request) error {
-	if followNonLocalRedirects {
-		return nil // Use the default http client checker.
-	}
-
+func redirectChecker() func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		if req.URL.Hostname() != via[0].URL.Hostname() {
 			return http.ErrUseLastResponse
@@ -153,4 +136,18 @@ func redirectChecker(followNonLocalRedirects bool) func(*http.Request, []*http.R
 		}
 		return nil
 	}
+}
+
+// ReadAtMost reads up to `limit` bytes from `r`, and reports an error
+// when `limit` bytes are read.
+func readAtMost(r io.Reader, limit int64) ([]byte, error) {
+	limitedReader := &io.LimitedReader{R: r, N: limit}
+	data, err := ioutil.ReadAll(limitedReader)
+	if err != nil {
+		return data, err
+	}
+	if limitedReader.N <= 0 {
+		return data, ErrLimitReached
+	}
+	return data, nil
 }
