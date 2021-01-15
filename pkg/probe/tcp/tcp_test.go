@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/kubernetes/pkg/probe"
+	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 func TestTcpHealthChecker(t *testing.T) {
