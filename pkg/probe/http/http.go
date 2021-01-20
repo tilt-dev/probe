@@ -26,6 +26,8 @@ import (
 	"net/url"
 	"time"
 
+	"k8s.io/klog/v2"
+
 	"github.com/tilt-dev/probe/pkg/probe"
 )
 
@@ -109,19 +111,23 @@ func DoHTTPProbe(url *url.URL, headers http.Header, client GetHTTPInterface) (pr
 	}
 	defer res.Body.Close()
 	b, err := readAtMost(res.Body, maxRespBodyLength)
-	if err != nil && err != ErrLimitReached {
-		return probe.Failure, "", err
+	if err != nil {
+		if err == ErrLimitReached {
+			klog.V(4).Infof("Non fatal body truncation for %s, Response: %v", url.String(), *res)
+		} else {
+			return probe.Failure, "", err
+		}
 	}
 	body := string(b)
 	if res.StatusCode >= http.StatusOK && res.StatusCode < http.StatusBadRequest {
 		if res.StatusCode >= http.StatusMultipleChoices { // Redirect
-			// klog.V(4).Infof("Probe terminated redirects for %s, Response: %v", url.String(), *res)
+			klog.V(4).Infof("Probe terminated redirects for %s, Response: %v", url.String(), *res)
 			return probe.Warning, body, nil
 		}
-		// klog.V(4).Infof("Probe succeeded for %s, Response: %v", url.String(), *res)
+		klog.V(4).Infof("Probe succeeded for %s, Response: %v", url.String(), *res)
 		return probe.Success, body, nil
 	}
-	// klog.V(4).Infof("Probe failed for %s with request headers %v, response body: %v", url.String(), headers, body)
+	klog.V(4).Infof("Probe failed for %s with request headers %v, response body: %v", url.String(), headers, body)
 	return probe.Failure, fmt.Sprintf("HTTP probe failed with statuscode: %d", res.StatusCode), nil
 }
 
@@ -138,7 +144,7 @@ func redirectChecker() func(*http.Request, []*http.Request) error {
 	}
 }
 
-// ReadAtMost reads up to `limit` bytes from `r`, and reports an error
+// readAtMost reads up to `limit` bytes from `r`, and reports an error
 // when `limit` bytes are read.
 func readAtMost(r io.Reader, limit int64) ([]byte, error) {
 	limitedReader := &io.LimitedReader{R: r, N: limit}
