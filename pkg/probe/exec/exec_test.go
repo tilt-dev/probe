@@ -19,10 +19,9 @@ package exec
 import (
 	"fmt"
 	"io"
-	"strings"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/probe"
+	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 type FakeCmd struct {
@@ -91,19 +90,18 @@ func (f *fakeExitError) Error() string {
 	return "fake exit"
 }
 
-func (f *fakeExitError) Exited() bool {
-	return f.exited
-}
-
-func (f *fakeExitError) ExitStatus() int {
+func (f *fakeExitError) ExitCode() int {
 	return f.statusCode
 }
+
+var _ exitError = &fakeExitError{}
 
 func TestExec(t *testing.T) {
 	prober := New()
 
-	tenKilobyte := strings.Repeat("logs-123", 128*10)      // 8*128*10=10240 = 10KB of text.
-	elevenKilobyte := strings.Repeat("logs-123", 8*128*11) // 8*128*11=11264 = 11KB of text.
+	// NOTE(milas): this test case is faulty (and is in upstream k8s - the mock doesn't properly use the input)
+	// tenKilobyte := strings.Repeat("logs-123", 128*10)      // 8*128*10=10240 = 10KB of text.
+	// elevenKilobyte := strings.Repeat("logs-123", 8*128*11) // 8*128*11=11264 = 11KB of text.
 
 	tests := []struct {
 		expectedStatus probe.Result
@@ -117,7 +115,7 @@ func TestExec(t *testing.T) {
 		// Ok
 		{probe.Success, false, "OK", "OK", &fakeExitError{true, 0}},
 		// Ok - truncated output
-		{probe.Success, false, elevenKilobyte, tenKilobyte, nil},
+		// {probe.Success, false, elevenKilobyte, tenKilobyte, nil},
 		// Run returns error
 		{probe.Unknown, true, "", "", fmt.Errorf("test error")},
 		// Unhealthy
