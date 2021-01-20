@@ -35,6 +35,9 @@ const (
 	DefaultProbeFailureThreshold = 3
 )
 
+// realClock is a thin wrapper around Go stdlib methods; a global
+// instance is shared to avoid allocating for every Prober. It is
+// safe to use from multiple Goroutines.
 var realClock = clockwork.NewRealClock()
 
 // StatusChangedFunc is invoked on status transitions.
@@ -72,27 +75,46 @@ func NewProber(p probe.Probe, opts ...Option) *Prober {
 //
 // It's loosely based (but simplified) on the k8s.io/kubernetes/pkg/kubelet/prober design.
 type Prober struct {
+	// probe is the actual logic that will be invoked to determine status.
 	probe probe.Probe
-
+	// clock is used to create timers and facilitate easier unit testing.
 	clock clockwork.Clock
-	mu    sync.Mutex
-
+	// mu guards mutable state that can be accessed from multiple goroutines (see docs on
+	// individual fields for which mu must be held before access).
+	mu sync.Mutex
+	// stopFunc is invoked when a running Prober instance is stopped to cancel the context.
+	//
+	// mu must be held before accessing.
 	stopFunc context.CancelFunc
-
+	// initialDelay is the amount of time before the probe is first executed.
 	initialDelay time.Duration
-	period       time.Duration
-	timeout      time.Duration
-
+	// period is the interval on which the probe is executed.
+	period time.Duration
+	// timeout is the maximum duration for which a probe can execute before it's considered
+	// to have failed (and its result ignored).
+	timeout time.Duration
+	// successThreshold is the number of times a probe must succeed after previously having
+	// failed before it will transition to a successful state.
 	successThreshold int
+	// failureThreshold is the number of times a probe must fail after previously having
+	// been successful before it will transition to a failure state.
 	failureThreshold int
-
-	// status is only updated after the failure/success threshold is crossed
+	// resultsChan receives ALL probe execution results, including duplicates.
+	//
+	// Currently, this is only exposed internally for testing to force synchronization.
+	resultsChan chan probe.Result
+	// status is only updated after the failure/success threshold is crossed.
+	//
+	// mu must be held before accessing.
 	status probe.Result
-
+	// statusFunc is an optional function to call whenever the status changes.
 	statusFunc StatusChangedFunc
-
+	// lastResult is the result of the previous probe execution and is used along with
+	// resultRun to determine when a threshold has been crossed.
 	lastResult probe.Result
-	resultRun  int
+	// resultRun is the number of times the probe has returned the same result and is
+	// used along with lastResult to determine when a threshold has been crossed.
+	resultRun int
 }
 
 // Run periodically executes the probe until stopped.
@@ -180,6 +202,12 @@ func (w *Prober) doProbe(ctx context.Context) {
 //
 // This is very similar to https://github.com/kubernetes/kubernetes/blob/v1.20.2/pkg/kubelet/prober/worker.go#L260-L273
 func (w *Prober) handleResult(result probe.Result) {
+	if w.resultsChan != nil {
+		defer func() {
+			w.resultsChan <- result
+		}()
+	}
+
 	if w.lastResult == result {
 		w.resultRun++
 	} else {
