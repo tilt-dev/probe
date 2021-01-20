@@ -32,11 +32,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/kubernetes/pkg/probe"
+
+	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 const FailureCode int = -1
+
+const testTimeout = time.Second * 30
 
 func setEnv(key, value string) func() {
 	originalValue := os.Getenv(key)
@@ -75,8 +77,7 @@ func TestHTTPProbeProxy(t *testing.T) {
 	defer unsetEnv("no_proxy")()
 	defer unsetEnv("NO_PROXY")()
 
-	followNonLocalRedirects := true
-	prober := New(followNonLocalRedirects)
+	prober := New()
 
 	// take some time to wait server boot
 	time.Sleep(2 * time.Second)
@@ -139,8 +140,7 @@ func TestHTTPProbeChecker(t *testing.T) {
 		}
 	}
 
-	followNonLocalRedirects := true
-	prober := New(followNonLocalRedirects)
+	prober := New()
 	testCases := []struct {
 		handler    func(w http.ResponseWriter, r *http.Request)
 		reqHeaders http.Header
@@ -218,7 +218,7 @@ func TestHTTPProbeChecker(t *testing.T) {
 			handler:    headerEchoHandler,
 			reqHeaders: http.Header{},
 			health:     probe.Success,
-			accBody:    "User-Agent: kube-probe/",
+			accBody:    "User-Agent: tilt-probe/",
 		},
 		{
 			handler: headerEchoHandler,
@@ -410,21 +410,12 @@ func TestHTTPProbeChecker_NonLocalRedirects(t *testing.T) {
 		"redirect loop":   {"/loop", probe.Failure, probe.Failure},
 	}
 	for desc, test := range testCases {
-		t.Run(desc+"-local", func(t *testing.T) {
-			followNonLocalRedirects := false
-			prober := New(followNonLocalRedirects)
+		t.Run(desc, func(t *testing.T) {
+			prober := New()
 			target, err := url.Parse(server.URL + "/redirect?loc=" + url.QueryEscape(test.redirect))
 			require.NoError(t, err)
-			result, _, _ := prober.Probe(target, nil, wait.ForeverTestTimeout)
+			result, _, _ := prober.Probe(target, nil, testTimeout)
 			assert.Equal(t, test.expectLocalResult, result)
-		})
-		t.Run(desc+"-nonlocal", func(t *testing.T) {
-			followNonLocalRedirects := true
-			prober := New(followNonLocalRedirects)
-			target, err := url.Parse(server.URL + "/redirect?loc=" + url.QueryEscape(test.redirect))
-			require.NoError(t, err)
-			result, _, _ := prober.Probe(target, nil, wait.ForeverTestTimeout)
-			assert.Equal(t, test.expectNonLocalResult, result)
 		})
 	}
 }
@@ -460,20 +451,11 @@ func TestHTTPProbeChecker_HostHeaderPreservedAfterRedirect(t *testing.T) {
 	for desc, test := range testCases {
 		headers := http.Header{}
 		headers.Add("Host", test.hostHeader)
-		t.Run(desc+"local", func(t *testing.T) {
-			followNonLocalRedirects := false
-			prober := New(followNonLocalRedirects)
+		t.Run(desc, func(t *testing.T) {
+			prober := New()
 			target, err := url.Parse(server.URL + "/redirect")
 			require.NoError(t, err)
-			result, _, _ := prober.Probe(target, headers, wait.ForeverTestTimeout)
-			assert.Equal(t, test.expectedResult, result)
-		})
-		t.Run(desc+"nonlocal", func(t *testing.T) {
-			followNonLocalRedirects := true
-			prober := New(followNonLocalRedirects)
-			target, err := url.Parse(server.URL + "/redirect")
-			require.NoError(t, err)
-			result, _, _ := prober.Probe(target, headers, wait.ForeverTestTimeout)
+			result, _, _ := prober.Probe(target, headers, testTimeout)
 			assert.Equal(t, test.expectedResult, result)
 		})
 	}
@@ -503,10 +485,10 @@ func TestHTTPProbeChecker_PayloadTruncated(t *testing.T) {
 	headers := http.Header{}
 	headers.Add("Host", successHostHeader)
 	t.Run("truncated payload", func(t *testing.T) {
-		prober := New(false)
+		prober := New()
 		target, err := url.Parse(server.URL + "/success")
 		require.NoError(t, err)
-		result, body, err := prober.Probe(target, headers, wait.ForeverTestTimeout)
+		result, body, err := prober.Probe(target, headers, testTimeout)
 		assert.NoError(t, err)
 		assert.Equal(t, result, probe.Success)
 		assert.Equal(t, body, string(truncatedPayload))
@@ -536,10 +518,10 @@ func TestHTTPProbeChecker_PayloadNormal(t *testing.T) {
 	headers := http.Header{}
 	headers.Add("Host", successHostHeader)
 	t.Run("normal payload", func(t *testing.T) {
-		prober := New(false)
+		prober := New()
 		target, err := url.Parse(server.URL + "/success")
 		require.NoError(t, err)
-		result, body, err := prober.Probe(target, headers, wait.ForeverTestTimeout)
+		result, body, err := prober.Probe(target, headers, testTimeout)
 		assert.NoError(t, err)
 		assert.Equal(t, result, probe.Success)
 		assert.Equal(t, body, string(normalPayload))
