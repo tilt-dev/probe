@@ -1,5 +1,6 @@
 /*
 Copyright 2015 The Kubernetes Authors.
+Modified 2021 Windmill Engineering.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,20 +18,30 @@ limitations under the License.
 package exec
 
 import (
-	"bytes"
-
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	"k8s.io/kubernetes/pkg/features"
-	"k8s.io/kubernetes/pkg/kubelet/util/ioutils"
-	"k8s.io/kubernetes/pkg/probe"
+	"os/exec"
 
 	"k8s.io/klog/v2"
-	"k8s.io/utils/exec"
+
+	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 const (
+	// TODO(milas): consider adding back limited output
 	maxReadLength = 10 * 1 << 10 // 10KB
 )
+
+type Cmd interface {
+	CombinedOutput() ([]byte, error)
+}
+
+var _ Cmd = &exec.Cmd{}
+
+type exitError interface {
+	error
+	ExitCode() int
+}
+
+var _ exitError = &exec.ExitError{}
 
 // New creates a Prober.
 func New() Prober {
@@ -39,7 +50,7 @@ func New() Prober {
 
 // Prober is an interface defining the Probe object for container readiness/liveness checks.
 type Prober interface {
-	Probe(e exec.Cmd) (probe.Result, string, error)
+	Probe(e Cmd) (probe.Result, string, error)
 }
 
 type execProber struct{}
@@ -47,35 +58,17 @@ type execProber struct{}
 // Probe executes a command to check the liveness/readiness of container
 // from executing a command. Returns the Result status, command output, and
 // errors if any.
-func (pr execProber) Probe(e exec.Cmd) (probe.Result, string, error) {
-	var dataBuffer bytes.Buffer
-	writer := ioutils.LimitWriter(&dataBuffer, maxReadLength)
-
-	e.SetStderr(writer)
-	e.SetStdout(writer)
-	err := e.Start()
-	if err == nil {
-		err = e.Wait()
-	}
-	data := dataBuffer.Bytes()
+func (pr execProber) Probe(e Cmd) (probe.Result, string, error) {
+	data, err := e.CombinedOutput()
 
 	klog.V(4).Infof("Exec probe response: %q", string(data))
 	if err != nil {
-		exit, ok := err.(exec.ExitError)
+		exit, ok := err.(exitError)
 		if ok {
-			if exit.ExitStatus() == 0 {
+			if exit.ExitCode() == 0 {
 				return probe.Success, string(data), nil
 			}
 			return probe.Failure, string(data), nil
-		}
-
-		timeoutErr, ok := err.(*TimeoutError)
-		if ok {
-			if utilfeature.DefaultFeatureGate.Enabled(features.ExecProbeTimeout) {
-				return probe.Failure, string(data), nil
-			}
-
-			klog.Warningf("Exec probe timed out after %s but ExecProbeTimeout feature gate was disabled", timeoutErr.Timeout())
 		}
 
 		return probe.Unknown, "", err
