@@ -194,12 +194,7 @@ func (w *Prober) handleResult(result probe.Result) {
 	}
 
 	w.mu.Lock()
-	if w.stopFunc == nil {
-		// this prober has been stopped
-		return
-	}
-	if w.status == result {
-		// prevent duplicate status updates
+	if w.stopFunc == nil || w.status == result {
 		w.mu.Unlock()
 		return
 	}
