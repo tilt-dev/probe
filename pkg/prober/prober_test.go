@@ -8,16 +8,30 @@ import (
 
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 type staticProbe struct {
+	mu     sync.Mutex
 	result probe.Result
 }
 
-func (s *staticProbe) Execute(ctx context.Context) probe.Result {
+func (s *staticProbe) Execute(_ context.Context) probe.Result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.result
+}
+
+func (s *staticProbe) setResult(result probe.Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.result = result
+}
+
+func newStaticProbe(result probe.Result) *staticProbe {
+	return &staticProbe{result: result}
 }
 
 func mockClock() (clockwork.FakeClock, Option) {
@@ -28,8 +42,16 @@ func mockClock() (clockwork.FakeClock, Option) {
 	return c, opt
 }
 
+func resultsChan() (chan probe.Result, Option) {
+	results := make(chan probe.Result)
+	opt := func(p *Prober) {
+		p.resultsChan = results
+	}
+	return results, opt
+}
+
 func TestNewProberDefaults(t *testing.T) {
-	testProbe := &staticProbe{probe.Success}
+	testProbe := newStaticProbe(probe.Success)
 	p := NewProber(testProbe)
 	assert.NotNil(t, p)
 	assert.Equal(t, testProbe, p.probe)
@@ -43,7 +65,7 @@ func TestNewProberDefaults(t *testing.T) {
 }
 
 func TestNewProberOptions(t *testing.T) {
-	testProbe := &staticProbe{probe.Success}
+	testProbe := newStaticProbe(probe.Success)
 	t.Run("WithPeriod", func(t *testing.T) {
 		p := NewProber(testProbe, WithPeriod(5*time.Minute))
 		assert.Equal(t, 5*time.Minute, p.period)
@@ -91,7 +113,7 @@ func TestInitialDelay(t *testing.T) {
 
 	c, withMockClock := mockClock()
 
-	p := NewProber(&staticProbe{probe.Success},
+	p := NewProber(newStaticProbe(probe.Success),
 		WithStatusChangeFunc(statusFunc),
 		WithInitialDelay(1*time.Minute),
 		withMockClock)
@@ -126,15 +148,16 @@ func (s *sleepProbe) Execute(ctx context.Context) probe.Result {
 }
 
 func TestTimeout(t *testing.T) {
-	c, withMockClock := mockClock()
+	_, withMockClock := mockClock()
+	results, withResultsChan := resultsChan()
+
 	sleepProbe := &sleepProbe{duration: 5 * time.Minute}
-	p := NewProber(sleepProbe, withMockClock, WithTimeout(30*time.Second))
+	p := NewProber(sleepProbe, withMockClock, withResultsChan, WithTimeout(5*time.Millisecond))
 
 	go p.Run(context.Background())
 
-	c.Advance(30 * time.Second)
-	c.BlockUntil(1)
-
+	// ensure that a result was received but that it did NOT come from our probe
+	<-results
 	assert.False(t, sleepProbe.finished)
 	assert.Equal(t, probe.Failure, p.Status())
 }
@@ -151,4 +174,63 @@ func TestStop(t *testing.T) {
 
 	assert.Nil(t, p.stopFunc)
 	assert.Equal(t, probe.Unknown, p.Status())
+}
+
+func TestThresholds(t *testing.T) {
+	type tc struct {
+		expectedStatus probe.Result
+		opts           []Option
+	}
+
+	const threshold = 15
+
+	tcs := []tc{
+		{
+			probe.Success,
+			[]Option{WithFailureThreshold(1), WithSuccessThreshold(threshold)},
+		},
+		{
+			probe.Failure,
+			[]Option{WithFailureThreshold(threshold), WithSuccessThreshold(1)},
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(string(tc.expectedStatus), func(t *testing.T) {
+			results, withResultsChan := resultsChan()
+			c, withMockClock := mockClock()
+			var initialStatus probe.Result
+			if tc.expectedStatus == probe.Success {
+				initialStatus = probe.Failure
+			} else if tc.expectedStatus == probe.Failure {
+				initialStatus = probe.Success
+			} else {
+				require.Fail(t, "Unsupported status: %s", tc.expectedStatus)
+			}
+
+			opts := []Option{withMockClock, withResultsChan, WithInitialDelay(0), WithPeriod(1 * time.Minute)}
+			opts = append(opts, tc.opts...)
+			staticProbe := &staticProbe{result: initialStatus}
+			p := NewProber(staticProbe, opts...)
+
+			go p.Run(context.Background())
+
+			// wait for initial status to process
+			assert.Equal(t, initialStatus, <-results)
+			staticProbe.setResult(tc.expectedStatus)
+
+			for invocation := 1; invocation <= threshold; invocation++ {
+				c.Advance(1 * time.Minute)
+				c.BlockUntil(1)
+				<-results
+				if invocation != threshold {
+					// don't actually care WHAT it is as long as it's not the end state yet
+					require.NotEqualf(t, tc.expectedStatus, p.Status(), "status prematurely reached at invocation %d", invocation)
+				} else {
+					require.Equal(t, tc.expectedStatus, p.Status())
+					break
+				}
+			}
+		})
+	}
 }
