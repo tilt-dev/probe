@@ -178,7 +178,8 @@ func (w *Prober) doProbe(ctx context.Context) {
 	defer cancel()
 	result := make(chan probe.Result, 1)
 	go func() {
-		result <- w.probe.Execute(ctx)
+		r, _, _ := w.probe.Execute(ctx)
+		result <- r
 	}()
 
 	for {

@@ -14,9 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package tcp
+package probe
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -24,10 +25,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tilt-dev/probe/pkg/probe"
+	"github.com/stretchr/testify/assert"
 )
 
-func TestTcpHealthChecker(t *testing.T) {
+func TestTCPSocket(t *testing.T) {
 	// Setup a test server that responds to probing correctly
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -46,23 +47,27 @@ func TestTcpHealthChecker(t *testing.T) {
 		host string
 		port int
 
-		expectedStatus probe.Result
+		expectedStatus Result
 		expectedError  error
 	}{
 		// A connection is made and probing would succeed
-		{tHost, tPort, probe.Success, nil},
+		{tHost, tPort, Success, nil},
 		// No connection can be made and probing would fail
-		{tHost, -1, probe.Failure, nil},
+		{tHost, -1, Failure, nil},
 	}
 
-	prober := New()
 	for i, tt := range tests {
-		status, _, err := prober.Probe(tt.host, tt.port, 1*time.Second)
+		p := NewTCPSocket(tt.host, tt.port)
+		assert.Equal(t, net.JoinHostPort(tt.host, strconv.Itoa(tt.port)), p.Address())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		status, _, err := p.Execute(ctx)
 		if status != tt.expectedStatus {
 			t.Errorf("#%d: expected status=%v, get=%v", i, tt.expectedStatus, status)
 		}
 		if err != tt.expectedError {
 			t.Errorf("#%d: expected error=%v, get=%v", i, tt.expectedError, err)
 		}
+		cancel()
 	}
 }

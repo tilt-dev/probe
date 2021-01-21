@@ -18,10 +18,10 @@ type staticProbe struct {
 	result probe.Result
 }
 
-func (s *staticProbe) Execute(_ context.Context) probe.Result {
+func (s *staticProbe) Execute(_ context.Context) (probe.Result, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.result
+	return s.result, "", nil
 }
 
 func (s *staticProbe) setResult(result probe.Result) {
@@ -137,13 +137,13 @@ type sleepProbe struct {
 	duration time.Duration
 }
 
-func (s *sleepProbe) Execute(ctx context.Context) probe.Result {
+func (s *sleepProbe) Execute(ctx context.Context) (probe.Result, string, error) {
 	select {
 	case <-ctx.Done():
-		return probe.Unknown
+		return probe.Unknown, "context done", nil
 	case <-time.After(s.duration):
 		s.finished = true
-		return probe.Success
+		return probe.Success, "", nil
 	}
 }
 

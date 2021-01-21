@@ -15,14 +15,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package exec
+package probe
 
 import (
+	"context"
 	"os/exec"
 
 	"k8s.io/klog/v2"
-
-	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 const (
@@ -43,35 +42,37 @@ type exitError interface {
 
 var _ exitError = &exec.ExitError{}
 
-// New creates a Prober.
-func New() Prober {
-	return execProber{}
+// NewExec creates a probe that will execute a process.
+func NewExec(cmd Cmd) Exec {
+	return Exec{
+		cmd: cmd,
+	}
 }
 
-// Prober is an interface defining the Probe object for container readiness/liveness checks.
-type Prober interface {
-	Probe(e Cmd) (probe.Result, string, error)
+type Exec struct {
+	cmd Cmd
 }
 
-type execProber struct{}
+var _ Probe = &Exec{}
 
-// Probe executes a command to check the liveness/readiness of container
+// Execute executes a command to check the liveness/readiness of container
 // from executing a command. Returns the Result status, command output, and
 // errors if any.
-func (pr execProber) Probe(e Cmd) (probe.Result, string, error) {
-	data, err := e.CombinedOutput()
+func (e Exec) Execute(_ context.Context) (Result, string, error) {
+	// TODO(milas): refactor this to actually use context for execution
+	data, err := e.cmd.CombinedOutput()
 
 	klog.V(4).Infof("Exec probe response: %q", string(data))
 	if err != nil {
 		exit, ok := err.(exitError)
 		if ok {
 			if exit.ExitCode() == 0 {
-				return probe.Success, string(data), nil
+				return Success, string(data), nil
 			}
-			return probe.Failure, string(data), nil
+			return Failure, string(data), nil
 		}
 
-		return probe.Unknown, "", err
+		return Unknown, "", err
 	}
-	return probe.Success, string(data), nil
+	return Success, string(data), nil
 }
