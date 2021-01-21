@@ -1,5 +1,6 @@
 /*
 Copyright 2015 The Kubernetes Authors.
+Modified 2021 Windmill Engineering.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +15,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package http
+package prober
 
 import (
 	"context"
@@ -27,8 +28,6 @@ import (
 	"net/url"
 
 	"k8s.io/klog/v2"
-
-	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 const (
@@ -47,22 +46,26 @@ func defaultTransport() *http.Transport {
 	}
 }
 
-// New creates Prober that will skip TLS verification while probing.
-func New() Prober {
+// NewHTTPGetProber creates a HTTPGetProber that will perform an HTTP GET request to determine service status.
+func NewHTTPGetProber() HTTPGetProber {
 	return httpProber{defaultTransport()}
 }
 
-// Prober is an interface that defines the Probe function for doing HTTP readiness/liveness checks.
-type Prober interface {
-	Probe(ctx context.Context, url *url.URL, headers http.Header) (probe.Result, string, error)
+// HTTPGetProber executes HTTP GET requests to determine service status.
+type HTTPGetProber interface {
+	// Probe executes an HTTP GET request to determine service status.
+	//
+	// Any non-successful status code (< 200 or >= 400) or HTTP/network communication error will return Failure.
+	// A potentially truncated version of the HTTP response body is returned as output.
+	Probe(ctx context.Context, url *url.URL, headers http.Header) (Result, string, error)
 }
 
 type httpProber struct {
 	transport *http.Transport
 }
 
-// Probe returns a ProbeRunner capable of running an HTTP check.
-func (pr httpProber) Probe(ctx context.Context, url *url.URL, headers http.Header) (probe.Result, string, error) {
+// Probe executes an HTTP GET request to determine service status.
+func (pr httpProber) Probe(ctx context.Context, url *url.URL, headers http.Header) (Result, string, error) {
 	pr.transport.DisableCompression = true // removes Accept-Encoding header
 	client := &http.Client{
 		Transport:     pr.transport,
@@ -71,19 +74,19 @@ func (pr httpProber) Probe(ctx context.Context, url *url.URL, headers http.Heade
 	return doHTTPProbe(ctx, url, headers, client)
 }
 
-// GetHTTPInterface is an interface for making HTTP requests, that returns a response and error.
-type GetHTTPInterface interface {
+// httpClient is an interface for making HTTP requests that returns a response and error.
+type httpClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
 // doHTTPProbe checks if a GET request to the url succeeds.
 // If the HTTP response code is successful (i.e. 400 > code >= 200), it returns Success.
 // If the HTTP response code is unsuccessful or HTTP communication fails, it returns Failure.
-func doHTTPProbe(ctx context.Context, url *url.URL, headers http.Header, client GetHTTPInterface) (probe.Result, string, error) {
+func doHTTPProbe(ctx context.Context, url *url.URL, headers http.Header, client httpClient) (Result, string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url.String(), nil)
 	if err != nil {
 		// Convert errors into failures to catch timeouts.
-		return probe.Failure, err.Error(), nil
+		return Failure, err.Error(), nil
 	}
 	if _, ok := headers["User-Agent"]; !ok {
 		if headers == nil {
@@ -105,7 +108,7 @@ func doHTTPProbe(ctx context.Context, url *url.URL, headers http.Header, client 
 	res, err := client.Do(req)
 	if err != nil {
 		// Convert errors into failures to catch timeouts.
-		return probe.Failure, err.Error(), nil
+		return Failure, err.Error(), nil
 	}
 	defer res.Body.Close()
 	b, err := readAtMost(res.Body, maxRespBodyLength)
@@ -113,20 +116,20 @@ func doHTTPProbe(ctx context.Context, url *url.URL, headers http.Header, client 
 		if err == ErrLimitReached {
 			klog.V(4).Infof("Non fatal body truncation for %s, Response: %v", url.String(), *res)
 		} else {
-			return probe.Failure, "", err
+			return Failure, "", err
 		}
 	}
 	body := string(b)
 	if res.StatusCode >= http.StatusOK && res.StatusCode < http.StatusBadRequest {
 		if res.StatusCode >= http.StatusMultipleChoices { // Redirect
 			klog.V(4).Infof("Probe terminated redirects for %s, Response: %v", url.String(), *res)
-			return probe.Warning, body, nil
+			return Warning, body, nil
 		}
 		klog.V(4).Infof("Probe succeeded for %s, Response: %v", url.String(), *res)
-		return probe.Success, body, nil
+		return Success, body, nil
 	}
 	klog.V(4).Infof("Probe failed for %s with request headers %v, response body: %v", url.String(), headers, body)
-	return probe.Failure, fmt.Sprintf("HTTP probe failed with statuscode: %d", res.StatusCode), nil
+	return Failure, fmt.Sprintf("HTTP probe failed with statuscode: %d", res.StatusCode), nil
 }
 
 func redirectChecker() func(*http.Request, []*http.Request) error {
