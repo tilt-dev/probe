@@ -18,7 +18,7 @@ type staticProbe struct {
 	err    error
 }
 
-func (s *staticProbe) probe(_ context.Context) (Result, string, error) {
+func (s *staticProbe) Probe(_ context.Context) (Result, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.result, s.output, s.err
@@ -54,9 +54,9 @@ func resultsChan() (chan probeResult, WorkerOption) {
 
 func TestNewProberDefaults(t *testing.T) {
 	testProbe := newStaticProbe(Success, "", nil)
-	w := NewWorker(testProbe.probe)
+	w := NewWorker(testProbe)
 	assert.NotNil(t, w)
-	assert.NotNil(t, w.probe)
+	assert.NotNil(t, w.prober)
 	assert.Equal(t, DefaultProbePeriod, w.period)
 	assert.Equal(t, DefaultProbeTimeout, w.timeout)
 	assert.Equal(t, DefaultProbeSuccessThreshold, w.successThreshold)
@@ -69,27 +69,27 @@ func TestNewProberDefaults(t *testing.T) {
 func TestNewProberOptions(t *testing.T) {
 	testProbe := newStaticProbe(Success, "test output", nil)
 	t.Run("WorkerPeriod", func(t *testing.T) {
-		w := NewWorker(testProbe.probe, WorkerPeriod(5*time.Minute))
+		w := NewWorker(testProbe, WorkerPeriod(5*time.Minute))
 		assert.Equal(t, 5*time.Minute, w.period)
 	})
 
 	t.Run("WorkerTimeout", func(t *testing.T) {
-		w := NewWorker(testProbe.probe, WorkerTimeout(2*time.Hour))
+		w := NewWorker(testProbe, WorkerTimeout(2*time.Hour))
 		assert.Equal(t, 2*time.Hour, w.timeout)
 	})
 
 	t.Run("WorkerInitialDelay", func(t *testing.T) {
-		w := NewWorker(testProbe.probe, WorkerInitialDelay(500*time.Millisecond))
+		w := NewWorker(testProbe, WorkerInitialDelay(500*time.Millisecond))
 		assert.Equal(t, 500*time.Millisecond, w.initialDelay)
 	})
 
 	t.Run("WorkerSuccessThreshold", func(t *testing.T) {
-		w := NewWorker(testProbe.probe, WorkerSuccessThreshold(1000))
+		w := NewWorker(testProbe, WorkerSuccessThreshold(1000))
 		assert.Equal(t, 1000, w.successThreshold)
 	})
 
 	t.Run("WorkerFailureThreshold", func(t *testing.T) {
-		w := NewWorker(testProbe.probe, WorkerFailureThreshold(99))
+		w := NewWorker(testProbe, WorkerFailureThreshold(99))
 		assert.Equal(t, 99, w.failureThreshold)
 	})
 
@@ -99,7 +99,7 @@ func TestNewProberOptions(t *testing.T) {
 			called = true
 		}
 
-		w := NewWorker(testProbe.probe, WorkerOnStatusChange(statusFunc))
+		w := NewWorker(testProbe, WorkerOnStatusChange(statusFunc))
 		assert.NotNil(t, w.statusFunc)
 		w.statusFunc(Success, "test output")
 		assert.True(t, called)
@@ -115,7 +115,7 @@ func TestInitialDelay(t *testing.T) {
 
 	c, withMockClock := mockClock()
 
-	w := NewWorker(newStaticProbe(Success, "", nil).probe,
+	w := NewWorker(newStaticProbe(Success, "", nil),
 		WorkerOnStatusChange(statusFunc),
 		WorkerInitialDelay(1*time.Minute),
 		withMockClock)
@@ -134,7 +134,7 @@ func TestInitialDelay(t *testing.T) {
 	assert.Equal(t, Success, w.Status())
 }
 
-func sleepProbe(duration time.Duration) Probe {
+func sleepProbe(duration time.Duration) ProberFunc {
 	return func(ctx context.Context) (Result, string, error) {
 		select {
 		case <-ctx.Done():
@@ -208,7 +208,7 @@ func TestThresholds(t *testing.T) {
 			opts := []WorkerOption{withMockClock, withResultsChan, WorkerInitialDelay(0), WorkerPeriod(1 * time.Minute)}
 			opts = append(opts, tc.opts...)
 			staticProbe := &staticProbe{result: initialStatus}
-			w := NewWorker(staticProbe.probe, opts...)
+			w := NewWorker(staticProbe, opts...)
 
 			go w.Run(context.Background())
 

@@ -55,11 +55,11 @@ type probeResult struct {
 	err    error
 }
 
-// NewWorker creates a Worker instance using the provided probe.Probe
+// NewWorker creates a Worker instance using the provided probe.Prober
 // and options (if any).
-func NewWorker(probeFunc Probe, opts ...WorkerOption) *Worker {
+func NewWorker(prober Prober, opts ...WorkerOption) *Worker {
 	w := &Worker{
-		probe:            probeFunc,
+		prober:           prober,
 		clock:            realClock,
 		period:           DefaultProbePeriod,
 		timeout:          DefaultProbeTimeout,
@@ -81,7 +81,7 @@ func NewWorker(probeFunc Probe, opts ...WorkerOption) *Worker {
 // It's loosely based (but simplified) on the k8s.io/kubernetes/pkg/kubelet/prober design.
 type Worker struct {
 	// probe is the actual logic that will be invoked to determine status.
-	probe Probe
+	prober Prober
 	// clock is used to create timers and facilitate easier unit testing.
 	clock clockwork.Clock
 	// mu guards mutable state that can be accessed from multiple goroutines (see docs on
@@ -183,7 +183,7 @@ func (w *Worker) doProbe(ctx context.Context) {
 	defer cancel()
 	result := make(chan probeResult, 1)
 	go func() {
-		r, out, err := w.probe(ctx)
+		r, out, err := w.prober.Probe(ctx)
 		result <- probeResult{result: r, output: out, err: err}
 	}()
 
