@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -42,17 +43,23 @@ var realClock = clockwork.NewRealClock()
 //
 // It will NOT be called for subsequent probe invocations that do not
 // result in a status change.
-type StatusChangedFunc func(status Result)
+type StatusChangedFunc func(status Result, output string)
 
 // WorkerOption can be passed when creating a Worker to configure the
 // instance.
 type WorkerOption func(w *Worker)
 
-// NewWorker creates a Worker instance using the provided probe.Probe
+type probeResult struct {
+	result Result
+	output string
+	err    error
+}
+
+// NewWorker creates a Worker instance using the provided probe.Prober
 // and options (if any).
-func NewWorker(p Probe, opts ...WorkerOption) *Worker {
+func NewWorker(prober Prober, opts ...WorkerOption) *Worker {
 	w := &Worker{
-		probe:            p,
+		prober:           prober,
 		clock:            realClock,
 		period:           DefaultProbePeriod,
 		timeout:          DefaultProbeTimeout,
@@ -74,7 +81,7 @@ func NewWorker(p Probe, opts ...WorkerOption) *Worker {
 // It's loosely based (but simplified) on the k8s.io/kubernetes/pkg/kubelet/prober design.
 type Worker struct {
 	// probe is the actual logic that will be invoked to determine status.
-	probe Probe
+	prober Prober
 	// clock is used to create timers and facilitate easier unit testing.
 	clock clockwork.Clock
 	// mu guards mutable state that can be accessed from multiple goroutines (see docs on
@@ -100,7 +107,7 @@ type Worker struct {
 	// resultsChan receives ALL probe execution results, including duplicates.
 	//
 	// Currently, this is only exposed internally for testing to force synchronization.
-	resultsChan chan Result
+	resultsChan chan probeResult
 	// status is only updated after the failure/success threshold is crossed.
 	//
 	// mu must be held before accessing.
@@ -174,9 +181,10 @@ func (w *Worker) Status() Result {
 func (w *Worker) doProbe(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, w.timeout)
 	defer cancel()
-	result := make(chan Result, 1)
+	result := make(chan probeResult, 1)
 	go func() {
-		result <- w.probe.Execute(ctx)
+		r, out, err := w.prober.Probe(ctx)
+		result <- probeResult{result: r, output: out, err: err}
 	}()
 
 	for {
@@ -189,7 +197,7 @@ func (w *Worker) doProbe(ctx context.Context) {
 				// only context deadline exceeded triggers a result handling
 				// (if context was explicitly canceled, there's no reason to
 				// record a result as the prober is being stopped)
-				w.handleResult(Failure)
+				w.handleResult(probeResult{result: Failure, err: ctx.Err()})
 			}
 			return
 		}
@@ -199,11 +207,21 @@ func (w *Worker) doProbe(ctx context.Context) {
 // handleResult updates prober internal state based on the probe result.
 //
 // This is very similar to https://github.com/kubernetes/kubernetes/blob/v1.20.2/pkg/kubelet/prober/worker.go#L260-L273
-func (w *Worker) handleResult(result Result) {
+func (w *Worker) handleResult(probeResult probeResult) {
 	if w.resultsChan != nil {
 		defer func() {
-			w.resultsChan <- result
+			w.resultsChan <- probeResult
 		}()
+	}
+
+	result := probeResult.result
+	if probeResult.err != nil {
+		if !errors.Is(probeResult.err, context.DeadlineExceeded) {
+			// the probe itself returned an error, so ignore this execution
+			klog.V(4).ErrorS(probeResult.err, "Probe returned an error; result ignored")
+			return
+		}
+		result = Failure
 	}
 
 	if w.lastResult == result {
@@ -228,7 +246,7 @@ func (w *Worker) handleResult(result Result) {
 	w.mu.Unlock()
 
 	if w.statusFunc != nil {
-		w.statusFunc(result)
+		w.statusFunc(result, probeResult.output)
 	}
 }
 

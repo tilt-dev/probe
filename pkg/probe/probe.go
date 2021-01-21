@@ -32,8 +32,24 @@ const (
 	Unknown Result = "unknown"
 )
 
-// Probe is a check to determine service status.
-type Probe interface {
-	// Execute performs a single check against a service.
-	Execute(ctx context.Context) Result
+// Prober performs a check to determine a service status.
+type Prober interface {
+	// Probe executes a single status check.
+	//
+	// result is the current service status
+	// output is optional info from the probe (such as a process stdout or HTTP response)
+	// err indicates an issue with the probe itself and that the result should be ignored
+	Probe(ctx context.Context) (result Result, output string, err error)
+}
+
+// ProberFunc is a functional version of Prober.
+type ProberFunc func(ctx context.Context) (Result, string, error)
+
+// Probe executes a single status check.
+//
+// result is the current service status
+// output is optional info from the probe (such as a process stdout or HTTP response)
+// err indicates an issue with the probe itself and that the result should be ignored
+func (f ProberFunc) Probe(ctx context.Context) (Result, string, error) {
+	return f(ctx)
 }
