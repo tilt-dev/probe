@@ -16,6 +16,8 @@ limitations under the License.
 
 package probe
 
+import "context"
+
 // Result is a string used to handle the results for probing container readiness/liveness
 type Result string
 
@@ -29,3 +31,9 @@ const (
 	// Unknown Result
 	Unknown Result = "unknown"
 )
+
+// Probe is a check to determine service status.
+type Probe interface {
+	// Execute performs a single check against a service.
+	Execute(ctx context.Context) Result
+}
