@@ -18,6 +18,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -85,7 +86,9 @@ func TestHTTPProbeProxy(t *testing.T) {
 	if err != nil {
 		t.Errorf("proxy test unexpected error: %v", err)
 	}
-	_, response, _ := prober.Probe(url, http.Header{}, time.Second*3)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, response, _ := prober.Probe(ctx, url, http.Header{})
 
 	if response == res {
 		t.Errorf("proxy test unexpected error: the probe is using proxy")
@@ -355,7 +358,9 @@ func TestHTTPProbeChecker(t *testing.T) {
 			if err != nil {
 				t.Errorf("case %d: unexpected error: %v", i, err)
 			}
-			health, output, err := prober.Probe(u, test.reqHeaders, 1*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+			health, output, err := prober.Probe(ctx, u, test.reqHeaders)
 			if test.health == probe.Unknown && err == nil {
 				t.Errorf("case %d: expected error", i)
 			}
@@ -414,7 +419,9 @@ func TestHTTPProbeChecker_NonLocalRedirects(t *testing.T) {
 			prober := New()
 			target, err := url.Parse(server.URL + "/redirect?loc=" + url.QueryEscape(test.redirect))
 			require.NoError(t, err)
-			result, _, _ := prober.Probe(target, nil, testTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+			defer cancel()
+			result, _, _ := prober.Probe(ctx, target, nil)
 			assert.Equal(t, test.expectLocalResult, result)
 		})
 	}
@@ -455,7 +462,9 @@ func TestHTTPProbeChecker_HostHeaderPreservedAfterRedirect(t *testing.T) {
 			prober := New()
 			target, err := url.Parse(server.URL + "/redirect")
 			require.NoError(t, err)
-			result, _, _ := prober.Probe(target, headers, testTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+			defer cancel()
+			result, _, _ := prober.Probe(ctx, target, headers)
 			assert.Equal(t, test.expectedResult, result)
 		})
 	}
@@ -488,7 +497,9 @@ func TestHTTPProbeChecker_PayloadTruncated(t *testing.T) {
 		prober := New()
 		target, err := url.Parse(server.URL + "/success")
 		require.NoError(t, err)
-		result, body, err := prober.Probe(target, headers, testTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		result, body, err := prober.Probe(ctx, target, headers)
 		assert.NoError(t, err)
 		assert.Equal(t, result, probe.Success)
 		assert.Equal(t, body, string(truncatedPayload))
@@ -521,7 +532,9 @@ func TestHTTPProbeChecker_PayloadNormal(t *testing.T) {
 		prober := New()
 		target, err := url.Parse(server.URL + "/success")
 		require.NoError(t, err)
-		result, body, err := prober.Probe(target, headers, testTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		result, body, err := prober.Probe(ctx, target, headers)
 		assert.NoError(t, err)
 		assert.Equal(t, result, probe.Success)
 		assert.Equal(t, body, string(normalPayload))

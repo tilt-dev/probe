@@ -153,11 +153,11 @@ func TestExec(t *testing.T) {
 
 		mockExecutor := &fakeExecutor{}
 		// there's no clean way to assert on the created command other than a mock
-		mockExecutor.On("Command", "foo", []string{"arg1", "arg2"}).Return(&fake)
+		mockExecutor.On("CommandContext", mock.Anything, "foo", []string{"arg1", "arg2"}).Return(&fake)
 
 		prober := execProber{runner: mockExecutor}
 
-		status, output, err := prober.Probe("foo", "arg1", "arg2")
+		status, output, err := prober.Probe(context.Background(), "foo", "arg1", "arg2")
 		if status != test.expectedStatus {
 			t.Errorf("[%d] expected %v, got %v", i, test.expectedStatus, status)
 		}
