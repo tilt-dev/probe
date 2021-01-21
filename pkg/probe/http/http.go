@@ -17,6 +17,7 @@ limitations under the License.
 package http
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -24,7 +25,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"time"
 
 	"k8s.io/klog/v2"
 
@@ -54,7 +54,7 @@ func New() Prober {
 
 // Prober is an interface that defines the Probe function for doing HTTP readiness/liveness checks.
 type Prober interface {
-	Probe(url *url.URL, headers http.Header, timeout time.Duration) (probe.Result, string, error)
+	Probe(ctx context.Context, url *url.URL, headers http.Header) (probe.Result, string, error)
 }
 
 type httpProber struct {
@@ -62,14 +62,13 @@ type httpProber struct {
 }
 
 // Probe returns a ProbeRunner capable of running an HTTP check.
-func (pr httpProber) Probe(url *url.URL, headers http.Header, timeout time.Duration) (probe.Result, string, error) {
+func (pr httpProber) Probe(ctx context.Context, url *url.URL, headers http.Header) (probe.Result, string, error) {
 	pr.transport.DisableCompression = true // removes Accept-Encoding header
 	client := &http.Client{
-		Timeout:       timeout,
 		Transport:     pr.transport,
 		CheckRedirect: redirectChecker(),
 	}
-	return DoHTTPProbe(url, headers, client)
+	return doHTTPProbe(ctx, url, headers, client)
 }
 
 // GetHTTPInterface is an interface for making HTTP requests, that returns a response and error.
@@ -77,12 +76,11 @@ type GetHTTPInterface interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// DoHTTPProbe checks if a GET request to the url succeeds.
+// doHTTPProbe checks if a GET request to the url succeeds.
 // If the HTTP response code is successful (i.e. 400 > code >= 200), it returns Success.
 // If the HTTP response code is unsuccessful or HTTP communication fails, it returns Failure.
-// This is exported because some other packages may want to do direct HTTP probes.
-func DoHTTPProbe(url *url.URL, headers http.Header, client GetHTTPInterface) (probe.Result, string, error) {
-	req, err := http.NewRequest("GET", url.String(), nil)
+func doHTTPProbe(ctx context.Context, url *url.URL, headers http.Header, client GetHTTPInterface) (probe.Result, string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url.String(), nil)
 	if err != nil {
 		// Convert errors into failures to catch timeouts.
 		return probe.Failure, err.Error(), nil
