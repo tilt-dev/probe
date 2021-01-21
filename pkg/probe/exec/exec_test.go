@@ -17,9 +17,13 @@ limitations under the License.
 package exec
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"testing"
+
+	"github.com/stretchr/testify/mock"
+	"k8s.io/utils/exec"
 
 	"github.com/tilt-dev/probe/pkg/probe"
 )
@@ -90,15 +94,35 @@ func (f *fakeExitError) Error() string {
 	return "fake exit"
 }
 
-func (f *fakeExitError) ExitCode() int {
+func (f *fakeExitError) Exited() bool {
+	return f.exited
+}
+
+func (f *fakeExitError) ExitStatus() int {
 	return f.statusCode
 }
 
-var _ exitError = &fakeExitError{}
+var _ exec.ExitError = &fakeExitError{}
+
+type fakeExecutor struct {
+	mock.Mock
+}
+
+func (f *fakeExecutor) Command(cmd string, args ...string) exec.Cmd {
+	callArgs := f.Called(cmd, args)
+	return callArgs.Get(0).(exec.Cmd)
+}
+
+func (f *fakeExecutor) CommandContext(ctx context.Context, cmd string, args ...string) exec.Cmd {
+	callArgs := f.Called(ctx, cmd, args)
+	return callArgs.Get(0).(exec.Cmd)
+}
+
+func (f *fakeExecutor) LookPath(file string) (string, error) {
+	return file, nil
+}
 
 func TestExec(t *testing.T) {
-	prober := New()
-
 	// NOTE(milas): this test case is faulty (and is in upstream k8s - the mock doesn't properly use the input)
 	// tenKilobyte := strings.Repeat("logs-123", 128*10)      // 8*128*10=10240 = 10KB of text.
 	// elevenKilobyte := strings.Repeat("logs-123", 8*128*11) // 8*128*11=11264 = 11KB of text.
@@ -126,7 +150,14 @@ func TestExec(t *testing.T) {
 			out: []byte(test.output),
 			err: test.err,
 		}
-		status, output, err := prober.Probe(&fake)
+
+		mockExecutor := &fakeExecutor{}
+		// there's no clean way to assert on the created command other than a mock
+		mockExecutor.On("Command", "foo", []string{"arg1", "arg2"}).Return(&fake)
+
+		prober := execProber{runner: mockExecutor}
+
+		status, output, err := prober.Probe("foo", "arg1", "arg2")
 		if status != test.expectedStatus {
 			t.Errorf("[%d] expected %v, got %v", i, test.expectedStatus, status)
 		}
@@ -139,5 +170,7 @@ func TestExec(t *testing.T) {
 		if test.output != output {
 			t.Errorf("[%d] expected %s, got %s", i, test.output, output)
 		}
+
+		mockExecutor.AssertExpectations(t)
 	}
 }

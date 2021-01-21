@@ -18,9 +18,8 @@ limitations under the License.
 package exec
 
 import (
-	"os/exec"
-
 	"k8s.io/klog/v2"
+	"k8s.io/utils/exec"
 
 	"github.com/tilt-dev/probe/pkg/probe"
 )
@@ -30,42 +29,39 @@ const (
 	maxReadLength = 10 * 1 << 10 // 10KB
 )
 
-type Cmd interface {
-	CombinedOutput() ([]byte, error)
-}
-
-var _ Cmd = &exec.Cmd{}
-
-type exitError interface {
-	error
-	ExitCode() int
-}
-
-var _ exitError = &exec.ExitError{}
+// osExecRunner is the default runner that's a shim around stdlib os/exec.
+//
+// A global instance is used to avoid creating an instance for every probe (it is Goroutine safe).
+var osExecRunner = exec.New()
 
 // New creates a Prober.
 func New() Prober {
-	return execProber{}
+	return execProber{
+		runner: osExecRunner,
+	}
 }
 
 // Prober is an interface defining the Probe object for container readiness/liveness checks.
 type Prober interface {
-	Probe(e Cmd) (probe.Result, string, error)
+	Probe(name string, args ...string) (probe.Result, string, error)
 }
 
-type execProber struct{}
+type execProber struct {
+	runner exec.Interface
+}
 
 // Probe executes a command to check the liveness/readiness of container
 // from executing a command. Returns the Result status, command output, and
 // errors if any.
-func (pr execProber) Probe(e Cmd) (probe.Result, string, error) {
-	data, err := e.CombinedOutput()
+func (pr execProber) Probe(name string, args ...string) (probe.Result, string, error) {
+	cmd := pr.runner.Command(name, args...)
+	data, err := cmd.CombinedOutput()
 
 	klog.V(4).Infof("Exec probe response: %q", string(data))
 	if err != nil {
-		exit, ok := err.(exitError)
+		exit, ok := err.(exec.ExitError)
 		if ok {
-			if exit.ExitCode() == 0 {
+			if exit.ExitStatus() == 0 {
 				return probe.Success, string(data), nil
 			}
 			return probe.Failure, string(data), nil
