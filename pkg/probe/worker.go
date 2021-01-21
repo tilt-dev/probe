@@ -1,4 +1,4 @@
-package prober
+package probe
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
-
-	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 const (
@@ -21,7 +19,7 @@ const (
 	DefaultProbeTimeout = 1 * time.Second
 
 	// DefaultInitialDelay is the default value for the initial delay
-	// before beginning to invoke the probe after the Prober is started.
+	// before beginning to invoke the probe after the Worker is started.
 	DefaultInitialDelay = 0 * time.Second
 
 	// DefaultProbeSuccessThreshold is the default value for the
@@ -36,7 +34,7 @@ const (
 )
 
 // realClock is a thin wrapper around Go stdlib methods; a global
-// instance is shared to avoid allocating for every Prober. It is
+// instance is shared to avoid allocating for every Worker. It is
 // safe to use from multiple Goroutines.
 var realClock = clockwork.NewRealClock()
 
@@ -44,16 +42,16 @@ var realClock = clockwork.NewRealClock()
 //
 // It will NOT be called for subsequent probe invocations that do not
 // result in a status change.
-type StatusChangedFunc func(status probe.Result)
+type StatusChangedFunc func(status Result)
 
-// Option can be passed when creating a Prober to configure the
+// WorkerOption can be passed when creating a Worker to configure the
 // instance.
-type Option func(w *Prober)
+type WorkerOption func(w *Worker)
 
-// NewProber creates a Prober instance using the provided probe.Probe
+// NewWorker creates a Worker instance using the provided probe.Probe
 // and options (if any).
-func NewProber(p probe.Probe, opts ...Option) *Prober {
-	w := &Prober{
+func NewWorker(p Probe, opts ...WorkerOption) *Worker {
+	w := &Worker{
 		probe:            p,
 		clock:            realClock,
 		period:           DefaultProbePeriod,
@@ -61,7 +59,7 @@ func NewProber(p probe.Probe, opts ...Option) *Prober {
 		initialDelay:     DefaultInitialDelay,
 		successThreshold: DefaultProbeSuccessThreshold,
 		failureThreshold: DefaultProbeFailureThreshold,
-		status:           probe.Unknown,
+		status:           Unknown,
 	}
 
 	for _, opt := range opts {
@@ -71,18 +69,18 @@ func NewProber(p probe.Probe, opts ...Option) *Prober {
 	return w
 }
 
-// Prober handles executing a probe.Probe and reporting results.
+// Worker handles executing probes and reporting results.
 //
 // It's loosely based (but simplified) on the k8s.io/kubernetes/pkg/kubelet/prober design.
-type Prober struct {
+type Worker struct {
 	// probe is the actual logic that will be invoked to determine status.
-	probe probe.Probe
+	probe Probe
 	// clock is used to create timers and facilitate easier unit testing.
 	clock clockwork.Clock
 	// mu guards mutable state that can be accessed from multiple goroutines (see docs on
 	// individual fields for which mu must be held before access).
 	mu sync.Mutex
-	// stopFunc is invoked when a running Prober instance is stopped to cancel the context.
+	// stopFunc is invoked when a running Worker instance is stopped to cancel the context.
 	//
 	// mu must be held before accessing.
 	stopFunc context.CancelFunc
@@ -102,29 +100,29 @@ type Prober struct {
 	// resultsChan receives ALL probe execution results, including duplicates.
 	//
 	// Currently, this is only exposed internally for testing to force synchronization.
-	resultsChan chan probe.Result
+	resultsChan chan Result
 	// status is only updated after the failure/success threshold is crossed.
 	//
 	// mu must be held before accessing.
-	status probe.Result
+	status Result
 	// statusFunc is an optional function to call whenever the status changes.
 	statusFunc StatusChangedFunc
 	// lastResult is the result of the previous probe execution and is used along with
 	// resultRun to determine when a threshold has been crossed.
-	lastResult probe.Result
+	lastResult Result
 	// resultRun is the number of times the probe has returned the same result and is
 	// used along with lastResult to determine when a threshold has been crossed.
 	resultRun int
 }
 
-// Run periodically executes the probe until stopped.
+// Run periodically executes a probe until stopped.
 //
-// The Prober can be stopped by explicitly calling Stop() or implicitly
+// The Worker can be stopped by explicitly calling Stop() or implicitly
 // via context cancellation.
 //
 // Calling Run() on an instance that is already running will result in
 // a panic.
-func (w *Prober) Run(ctx context.Context) {
+func (w *Worker) Run(ctx context.Context) {
 	w.mu.Lock()
 	if w.stopFunc != nil {
 		panic("prober is already running")
@@ -132,10 +130,10 @@ func (w *Prober) Run(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	w.stopFunc = cancel
 
-	w.lastResult = probe.Unknown
+	w.lastResult = Unknown
 	w.resultRun = 0
 	// initial status is failure until a successful probe
-	w.status = probe.Failure
+	w.status = Failure
 
 	w.mu.Unlock()
 
@@ -154,29 +152,29 @@ func (w *Prober) Run(ctx context.Context) {
 
 // Stop halts further probe invocations. It is safe to call Stop()
 // more than once.
-func (w *Prober) Stop() {
+func (w *Worker) Stop() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.stopFunc != nil {
 		w.stopFunc()
 		w.stopFunc = nil
-		w.status = probe.Unknown
+		w.status = Unknown
 	}
 }
 
 // Status returns the current probe result.
 //
 // If not running, this will always return probe.Unknown.
-func (w *Prober) Status() probe.Result {
+func (w *Worker) Status() Result {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.status
 }
 
-func (w *Prober) doProbe(ctx context.Context) {
+func (w *Worker) doProbe(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, w.timeout)
 	defer cancel()
-	result := make(chan probe.Result, 1)
+	result := make(chan Result, 1)
 	go func() {
 		result <- w.probe.Execute(ctx)
 	}()
@@ -191,7 +189,7 @@ func (w *Prober) doProbe(ctx context.Context) {
 				// only context deadline exceeded triggers a result handling
 				// (if context was explicitly canceled, there's no reason to
 				// record a result as the prober is being stopped)
-				w.handleResult(probe.Failure)
+				w.handleResult(Failure)
 			}
 			return
 		}
@@ -201,7 +199,7 @@ func (w *Prober) doProbe(ctx context.Context) {
 // handleResult updates prober internal state based on the probe result.
 //
 // This is very similar to https://github.com/kubernetes/kubernetes/blob/v1.20.2/pkg/kubelet/prober/worker.go#L260-L273
-func (w *Prober) handleResult(result probe.Result) {
+func (w *Worker) handleResult(result Result) {
 	if w.resultsChan != nil {
 		defer func() {
 			w.resultsChan <- result
@@ -236,66 +234,66 @@ func (w *Prober) handleResult(result probe.Result) {
 
 // isSuccessResult coerces a probe.Result value into a bool based on
 // whether it's considered a successful value or not.
-func isSuccessResult(result probe.Result) bool {
-	if result == probe.Success || result == probe.Warning {
+func isSuccessResult(result Result) bool {
+	if result == Success || result == Warning {
 		return true
 	}
 	return false
 }
 
-// WithPeriod sets the period between probe invocations.
-func WithPeriod(period time.Duration) Option {
-	return func(w *Prober) {
+// WorkerPeriod sets the period between probe invocations.
+func WorkerPeriod(period time.Duration) WorkerOption {
+	return func(w *Worker) {
 		w.period = period
 	}
 }
 
-// WithTimeout sets the duration before a running probe is canceled
+// WorkerTimeout sets the duration before a running probe is canceled
 // and considered to have failed.
-func WithTimeout(timeout time.Duration) Option {
-	return func(w *Prober) {
+func WorkerTimeout(timeout time.Duration) WorkerOption {
+	return func(w *Worker) {
 		w.timeout = timeout
 	}
 }
 
-// WithFailureThreshold sets the number of consecutive failures
+// WorkerFailureThreshold sets the number of consecutive failures
 // required after a probe has succeeded before the status will
 // transition to probe.Failure.
-func WithFailureThreshold(v int) Option {
-	return func(w *Prober) {
+func WorkerFailureThreshold(v int) WorkerOption {
+	return func(w *Worker) {
 		w.failureThreshold = v
 	}
 }
 
-// WithSuccessThreshold sets the number of consecutive successes
+// WorkerSuccessThreshold sets the number of consecutive successes
 // required after a probe has failed before the status will
 // transition to probe.Success.
-func WithSuccessThreshold(v int) Option {
-	return func(w *Prober) {
+func WorkerSuccessThreshold(v int) WorkerOption {
+	return func(w *Worker) {
 		w.successThreshold = v
 	}
 }
 
-// WithInitialDelay sets the amount of time that will be waited
+// WorkerInitialDelay sets the amount of time that will be waited
 // when the prober starts before beginning to invoke the probe.
 //
 // The status will be probe.Failure during the initial delay
 // period.
-func WithInitialDelay(delay time.Duration) Option {
-	return func(w *Prober) {
+func WorkerInitialDelay(delay time.Duration) WorkerOption {
+	return func(w *Worker) {
 		w.initialDelay = delay
 	}
 }
 
-// WithStatusChangeFunc sets the function to invoke when the status
+// WorkerOnStatusChange sets the function to invoke when the status
 // transitions.
 //
 // Subsequent probe invocations that do not result in a change to the
 // status (either because they return the same result or the failure/
 // success threshold has not been met) will not emit a status change
 // update.
-func WithStatusChangeFunc(f StatusChangedFunc) Option {
-	return func(w *Prober) {
+func WorkerOnStatusChange(f StatusChangedFunc) WorkerOption {
+	return func(w *Worker) {
 		w.statusFunc = f
 	}
 }
