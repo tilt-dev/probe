@@ -17,9 +17,9 @@ limitations under the License.
 package tcp
 
 import (
+	"context"
 	"net"
 	"strconv"
-	"time"
 
 	"k8s.io/klog/v2"
 
@@ -33,22 +33,22 @@ func New() Prober {
 
 // Prober is an interface that defines the Probe function for doing TCP readiness/liveness checks.
 type Prober interface {
-	Probe(host string, port int, timeout time.Duration) (probe.Result, string, error)
+	Probe(ctx context.Context, host string, port int) (probe.Result, string, error)
 }
 
 type tcpProber struct{}
 
 // Probe returns a ProbeRunner capable of running an TCP check.
-func (pr tcpProber) Probe(host string, port int, timeout time.Duration) (probe.Result, string, error) {
-	return DoTCPProbe(net.JoinHostPort(host, strconv.Itoa(port)), timeout)
+func (pr tcpProber) Probe(ctx context.Context, host string, port int) (probe.Result, string, error) {
+	return doTCPProbe(ctx, net.JoinHostPort(host, strconv.Itoa(port)))
 }
 
-// DoTCPProbe checks that a TCP socket to the address can be opened.
+// doTCPProbe checks that a TCP socket to the address can be opened.
 // If the socket can be opened, it returns Success
 // If the socket fails to open, it returns Failure.
-// This is exported because some other packages may want to do direct TCP probes.
-func DoTCPProbe(addr string, timeout time.Duration) (probe.Result, string, error) {
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+func doTCPProbe(ctx context.Context, addr string) (probe.Result, string, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		// Convert errors to failures to handle timeouts.
 		return probe.Failure, err.Error(), nil

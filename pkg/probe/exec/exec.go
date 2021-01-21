@@ -18,6 +18,8 @@ limitations under the License.
 package exec
 
 import (
+	"context"
+
 	"k8s.io/klog/v2"
 	"k8s.io/utils/exec"
 
@@ -43,7 +45,7 @@ func New() Prober {
 
 // Prober is an interface defining the Probe object for container readiness/liveness checks.
 type Prober interface {
-	Probe(name string, args ...string) (probe.Result, string, error)
+	Probe(ctx context.Context, name string, args ...string) (probe.Result, string, error)
 }
 
 type execProber struct {
@@ -53,8 +55,8 @@ type execProber struct {
 // Probe executes a command to check the liveness/readiness of container
 // from executing a command. Returns the Result status, command output, and
 // errors if any.
-func (pr execProber) Probe(name string, args ...string) (probe.Result, string, error) {
-	cmd := pr.runner.Command(name, args...)
+func (pr execProber) Probe(ctx context.Context, name string, args ...string) (probe.Result, string, error) {
+	cmd := pr.runner.CommandContext(ctx, name, args...)
 	data, err := cmd.CombinedOutput()
 
 	klog.V(4).Infof("Exec probe response: %q", string(data))

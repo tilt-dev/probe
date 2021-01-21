@@ -17,6 +17,8 @@ limitations under the License.
 package tcp
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -57,12 +59,16 @@ func TestTcpHealthChecker(t *testing.T) {
 
 	prober := New()
 	for i, tt := range tests {
-		status, _, err := prober.Probe(tt.host, tt.port, 1*time.Second)
-		if status != tt.expectedStatus {
-			t.Errorf("#%d: expected status=%v, get=%v", i, tt.expectedStatus, status)
-		}
-		if err != tt.expectedError {
-			t.Errorf("#%d: expected error=%v, get=%v", i, tt.expectedError, err)
-		}
+		t.Run(fmt.Sprintf("[%d] %s:%d", i, tt.host, tt.port), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+			status, _, err := prober.Probe(ctx, tt.host, tt.port)
+			if status != tt.expectedStatus {
+				t.Errorf("#%d: expected status=%v, get=%v", i, tt.expectedStatus, status)
+			}
+			if err != tt.expectedError {
+				t.Errorf("#%d: expected error=%v, get=%v", i, tt.expectedError, err)
+			}
+		})
 	}
 }
