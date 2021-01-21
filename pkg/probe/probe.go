@@ -33,7 +33,4 @@ const (
 )
 
 // Probe is a check to determine service status.
-type Probe interface {
-	// Execute performs a single check against a service.
-	Execute(ctx context.Context) Result
-}
+type Probe func(ctx context.Context) (Result, string, error)

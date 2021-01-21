@@ -14,22 +14,26 @@ import (
 type staticProbe struct {
 	mu     sync.Mutex
 	result Result
+	output string
+	err    error
 }
 
-func (s *staticProbe) Execute(_ context.Context) Result {
+func (s *staticProbe) probe(_ context.Context) (Result, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.result
+	return s.result, s.output, s.err
 }
 
-func (s *staticProbe) setResult(result Result) {
+func (s *staticProbe) update(result Result, output string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.result = result
+	s.output = output
+	s.err = err
 }
 
-func newStaticProbe(result Result) *staticProbe {
-	return &staticProbe{result: result}
+func newStaticProbe(result Result, output string, err error) *staticProbe {
+	return &staticProbe{result: result, output: output, err: err}
 }
 
 func mockClock() (clockwork.FakeClock, WorkerOption) {
@@ -40,8 +44,8 @@ func mockClock() (clockwork.FakeClock, WorkerOption) {
 	return c, opt
 }
 
-func resultsChan() (chan Result, WorkerOption) {
-	results := make(chan Result)
+func resultsChan() (chan probeResult, WorkerOption) {
+	results := make(chan probeResult)
 	opt := func(p *Worker) {
 		p.resultsChan = results
 	}
@@ -49,10 +53,10 @@ func resultsChan() (chan Result, WorkerOption) {
 }
 
 func TestNewProberDefaults(t *testing.T) {
-	testProbe := newStaticProbe(Success)
-	w := NewWorker(testProbe)
+	testProbe := newStaticProbe(Success, "", nil)
+	w := NewWorker(testProbe.probe)
 	assert.NotNil(t, w)
-	assert.Equal(t, testProbe, w.probe)
+	assert.NotNil(t, w.probe)
 	assert.Equal(t, DefaultProbePeriod, w.period)
 	assert.Equal(t, DefaultProbeTimeout, w.timeout)
 	assert.Equal(t, DefaultProbeSuccessThreshold, w.successThreshold)
@@ -63,41 +67,41 @@ func TestNewProberDefaults(t *testing.T) {
 }
 
 func TestNewProberOptions(t *testing.T) {
-	testProbe := newStaticProbe(Success)
+	testProbe := newStaticProbe(Success, "test output", nil)
 	t.Run("WorkerPeriod", func(t *testing.T) {
-		w := NewWorker(testProbe, WorkerPeriod(5*time.Minute))
+		w := NewWorker(testProbe.probe, WorkerPeriod(5*time.Minute))
 		assert.Equal(t, 5*time.Minute, w.period)
 	})
 
 	t.Run("WorkerTimeout", func(t *testing.T) {
-		w := NewWorker(testProbe, WorkerTimeout(2*time.Hour))
+		w := NewWorker(testProbe.probe, WorkerTimeout(2*time.Hour))
 		assert.Equal(t, 2*time.Hour, w.timeout)
 	})
 
 	t.Run("WorkerInitialDelay", func(t *testing.T) {
-		w := NewWorker(testProbe, WorkerInitialDelay(500*time.Millisecond))
+		w := NewWorker(testProbe.probe, WorkerInitialDelay(500*time.Millisecond))
 		assert.Equal(t, 500*time.Millisecond, w.initialDelay)
 	})
 
 	t.Run("WorkerSuccessThreshold", func(t *testing.T) {
-		w := NewWorker(testProbe, WorkerSuccessThreshold(1000))
+		w := NewWorker(testProbe.probe, WorkerSuccessThreshold(1000))
 		assert.Equal(t, 1000, w.successThreshold)
 	})
 
 	t.Run("WorkerFailureThreshold", func(t *testing.T) {
-		w := NewWorker(testProbe, WorkerFailureThreshold(99))
+		w := NewWorker(testProbe.probe, WorkerFailureThreshold(99))
 		assert.Equal(t, 99, w.failureThreshold)
 	})
 
-	t.Run("WorkerTimeout", func(t *testing.T) {
+	t.Run("WorkerOnStatusChange", func(t *testing.T) {
 		called := false
-		statusFunc := func(status Result) {
+		statusFunc := func(status Result, output string) {
 			called = true
 		}
 
-		w := NewWorker(testProbe, WorkerOnStatusChange(statusFunc))
+		w := NewWorker(testProbe.probe, WorkerOnStatusChange(statusFunc))
 		assert.NotNil(t, w.statusFunc)
-		w.statusFunc(Success)
+		w.statusFunc(Success, "test output")
 		assert.True(t, called)
 	})
 }
@@ -105,13 +109,13 @@ func TestNewProberOptions(t *testing.T) {
 func TestInitialDelay(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
-	statusFunc := func(status Result) {
+	statusFunc := func(status Result, output string) {
 		wg.Done()
 	}
 
 	c, withMockClock := mockClock()
 
-	w := NewWorker(newStaticProbe(Success),
+	w := NewWorker(newStaticProbe(Success, "", nil).probe,
 		WorkerOnStatusChange(statusFunc),
 		WorkerInitialDelay(1*time.Minute),
 		withMockClock)
@@ -130,18 +134,14 @@ func TestInitialDelay(t *testing.T) {
 	assert.Equal(t, Success, w.Status())
 }
 
-type sleepProbe struct {
-	finished bool
-	duration time.Duration
-}
-
-func (s *sleepProbe) Execute(ctx context.Context) Result {
-	select {
-	case <-ctx.Done():
-		return Unknown
-	case <-time.After(s.duration):
-		s.finished = true
-		return Success
+func sleepProbe(duration time.Duration) Probe {
+	return func(ctx context.Context) (Result, string, error) {
+		select {
+		case <-ctx.Done():
+			return Unknown, "context done", nil
+		case <-time.After(duration):
+			return Success, "sleep finished", nil
+		}
 	}
 }
 
@@ -149,14 +149,14 @@ func TestTimeout(t *testing.T) {
 	_, withMockClock := mockClock()
 	results, withResultsChan := resultsChan()
 
-	sleepProbe := &sleepProbe{duration: 5 * time.Minute}
-	w := NewWorker(sleepProbe, withMockClock, withResultsChan, WorkerTimeout(5*time.Millisecond))
+	w := NewWorker(sleepProbe(5*time.Minute), withMockClock, withResultsChan, WorkerTimeout(5*time.Millisecond))
 
 	go w.Run(context.Background())
 
 	// ensure that a result was received but that it did NOT come from our probe
-	<-results
-	assert.False(t, sleepProbe.finished)
+	result := <-results
+	assert.Equal(t, Failure, result.result)
+	assert.Equal(t, "", result.output)
 	assert.Equal(t, Failure, w.Status())
 }
 
@@ -164,8 +164,7 @@ func TestStop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	sleepProbe := &sleepProbe{duration: 5 * time.Minute}
-	w := NewWorker(sleepProbe)
+	w := NewWorker(sleepProbe(5 * time.Minute))
 	go w.Run(ctx)
 
 	w.Stop()
@@ -209,13 +208,13 @@ func TestThresholds(t *testing.T) {
 			opts := []WorkerOption{withMockClock, withResultsChan, WorkerInitialDelay(0), WorkerPeriod(1 * time.Minute)}
 			opts = append(opts, tc.opts...)
 			staticProbe := &staticProbe{result: initialStatus}
-			w := NewWorker(staticProbe, opts...)
+			w := NewWorker(staticProbe.probe, opts...)
 
 			go w.Run(context.Background())
 
 			// wait for initial status to process
-			assert.Equal(t, initialStatus, <-results)
-			staticProbe.setResult(tc.expectedStatus)
+			assert.Equal(t, probeResult{result: initialStatus}, <-results)
+			staticProbe.update(tc.expectedStatus, "", nil)
 
 			for invocation := 1; invocation <= threshold; invocation++ {
 				c.Advance(1 * time.Minute)
