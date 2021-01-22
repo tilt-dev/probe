@@ -8,6 +8,8 @@ import (
 
 	"github.com/jonboulle/clockwork"
 	"k8s.io/klog/v2"
+
+	"github.com/tilt-dev/probe/pkg/prober"
 )
 
 const (
@@ -43,30 +45,30 @@ var realClock = clockwork.NewRealClock()
 //
 // It will NOT be called for subsequent probe invocations that do not
 // result in a status change.
-type StatusChangedFunc func(status Result, output string)
+type StatusChangedFunc func(status prober.Result, output string)
 
 // WorkerOption can be passed when creating a Worker to configure the
 // instance.
 type WorkerOption func(w *Worker)
 
 type probeResult struct {
-	result Result
+	result prober.Result
 	output string
 	err    error
 }
 
 // NewWorker creates a Worker instance using the provided probe.Prober
 // and options (if any).
-func NewWorker(prober Prober, opts ...WorkerOption) *Worker {
+func NewWorker(p prober.Prober, opts ...WorkerOption) *Worker {
 	w := &Worker{
-		prober:           prober,
+		prober:           p,
 		clock:            realClock,
 		period:           DefaultProbePeriod,
 		timeout:          DefaultProbeTimeout,
 		initialDelay:     DefaultInitialDelay,
 		successThreshold: DefaultProbeSuccessThreshold,
 		failureThreshold: DefaultProbeFailureThreshold,
-		status:           Unknown,
+		status:           prober.Unknown,
 	}
 
 	for _, opt := range opts {
@@ -81,7 +83,7 @@ func NewWorker(prober Prober, opts ...WorkerOption) *Worker {
 // It's loosely based (but simplified) on the k8s.io/kubernetes/pkg/kubelet/prober design.
 type Worker struct {
 	// probe is the actual logic that will be invoked to determine status.
-	prober Prober
+	prober prober.Prober
 	// clock is used to create timers and facilitate easier unit testing.
 	clock clockwork.Clock
 	// mu guards mutable state that can be accessed from multiple goroutines (see docs on
@@ -111,12 +113,12 @@ type Worker struct {
 	// status is only updated after the failure/success threshold is crossed.
 	//
 	// mu must be held before accessing.
-	status Result
+	status prober.Result
 	// statusFunc is an optional function to call whenever the status changes.
 	statusFunc StatusChangedFunc
 	// lastResult is the result of the previous probe execution and is used along with
 	// resultRun to determine when a threshold has been crossed.
-	lastResult Result
+	lastResult prober.Result
 	// resultRun is the number of times the probe has returned the same result and is
 	// used along with lastResult to determine when a threshold has been crossed.
 	resultRun int
@@ -137,10 +139,10 @@ func (w *Worker) Run(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	w.stopFunc = cancel
 
-	w.lastResult = Unknown
+	w.lastResult = prober.Unknown
 	w.resultRun = 0
 	// initial status is failure until a successful probe
-	w.status = Failure
+	w.status = prober.Failure
 
 	w.mu.Unlock()
 
@@ -165,14 +167,14 @@ func (w *Worker) Stop() {
 	if w.stopFunc != nil {
 		w.stopFunc()
 		w.stopFunc = nil
-		w.status = Unknown
+		w.status = prober.Unknown
 	}
 }
 
 // Status returns the current probe result.
 //
 // If not running, this will always return probe.Unknown.
-func (w *Worker) Status() Result {
+func (w *Worker) Status() prober.Result {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.status
@@ -197,7 +199,7 @@ func (w *Worker) doProbe(ctx context.Context) {
 				// only context deadline exceeded triggers a result handling
 				// (if context was explicitly canceled, there's no reason to
 				// record a result as the prober is being stopped)
-				w.handleResult(probeResult{result: Failure, err: ctx.Err()})
+				w.handleResult(probeResult{result: prober.Failure, err: ctx.Err()})
 			}
 			return
 		}
@@ -221,7 +223,7 @@ func (w *Worker) handleResult(probeResult probeResult) {
 			klog.V(4).ErrorS(probeResult.err, "Probe returned an error; result ignored")
 			return
 		}
-		result = Failure
+		result = prober.Failure
 	}
 
 	if w.lastResult == result {
@@ -252,8 +254,8 @@ func (w *Worker) handleResult(probeResult probeResult) {
 
 // isSuccessResult coerces a probe.Result value into a bool based on
 // whether it's considered a successful value or not.
-func isSuccessResult(result Result) bool {
-	if result == Success || result == Warning {
+func isSuccessResult(result prober.Result) bool {
+	if result == prober.Success || result == prober.Warning {
 		return true
 	}
 	return false

@@ -1,5 +1,6 @@
 /*
 Copyright 2015 The Kubernetes Authors.
+Modified 2021 Windmill Engineering.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,21 +15,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package probe
+package prober
 
 import "context"
 
-// Result is a string used to handle the results for probing container readiness/liveness
+// Result is a string used to indicate service status.
 type Result string
 
 const (
-	// Success Result
+	// Success indicates that the service is healthy.
 	Success Result = "success"
-	// Warning Result. Logically success, but with additional debugging information attached.
+	// Warning indicates that the service is healthy but additional diagnostic information might be attached.
 	Warning Result = "warning"
-	// Failure Result
+	// Failure indicates that the service is not healthy.
 	Failure Result = "failure"
-	// Unknown Result
+	// Unknown indicates that the prober was unable to determine the service status due to an internal issue.
+	//
+	// An Unknown result should also include an error in the Prober return values.
 	Unknown Result = "unknown"
 )
 

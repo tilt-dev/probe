@@ -15,15 +15,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package exec
+package prober
 
 import (
 	"context"
 
 	"k8s.io/klog/v2"
 	"k8s.io/utils/exec"
-
-	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 const (
@@ -36,26 +34,28 @@ const (
 // A global instance is used to avoid creating an instance for every probe (it is Goroutine safe).
 var osExecRunner = exec.New()
 
-// New creates a Prober.
-func New() Prober {
+// NewExecProber creates an ExecProber.
+func NewExecProber() ExecProber {
 	return execProber{
 		runner: osExecRunner,
 	}
 }
 
-// Prober is an interface defining the Probe object for container readiness/liveness checks.
-type Prober interface {
-	Probe(ctx context.Context, name string, args ...string) (probe.Result, string, error)
+// ExecProber executes a command to check a service status.
+type ExecProber interface {
+	// Probe executes a command to check a service status.
+	//
+	// If the process terminates with any exit code besides 0, Failure will be returned.
+	// The merged result of stdout + stderr are returned as output.
+	Probe(ctx context.Context, name string, args ...string) (Result, string, error)
 }
 
 type execProber struct {
 	runner exec.Interface
 }
 
-// Probe executes a command to check the liveness/readiness of container
-// from executing a command. Returns the Result status, command output, and
-// errors if any.
-func (pr execProber) Probe(ctx context.Context, name string, args ...string) (probe.Result, string, error) {
+// Probe executes a command to check service status.
+func (pr execProber) Probe(ctx context.Context, name string, args ...string) (Result, string, error) {
 	cmd := pr.runner.CommandContext(ctx, name, args...)
 	data, err := cmd.CombinedOutput()
 
@@ -64,12 +64,12 @@ func (pr execProber) Probe(ctx context.Context, name string, args ...string) (pr
 		exit, ok := err.(exec.ExitError)
 		if ok {
 			if exit.ExitStatus() == 0 {
-				return probe.Success, string(data), nil
+				return Success, string(data), nil
 			}
-			return probe.Failure, string(data), nil
+			return Failure, string(data), nil
 		}
 
-		return probe.Unknown, "", err
+		return Unknown, "", err
 	}
-	return probe.Success, string(data), nil
+	return Success, string(data), nil
 }

@@ -1,5 +1,6 @@
 /*
 Copyright 2015 The Kubernetes Authors.
+Modified 2021 Windmill Engineering.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +15,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package tcp
+package prober
 
 import (
 	"context"
@@ -25,8 +26,6 @@ import (
 	"strconv"
 	"testing"
 	"time"
-
-	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 func TestTcpHealthChecker(t *testing.T) {
@@ -48,16 +47,16 @@ func TestTcpHealthChecker(t *testing.T) {
 		host string
 		port int
 
-		expectedStatus probe.Result
+		expectedStatus Result
 		expectedError  error
 	}{
 		// A connection is made and probing would succeed
-		{tHost, tPort, probe.Success, nil},
+		{tHost, tPort, Success, nil},
 		// No connection can be made and probing would fail
-		{tHost, -1, probe.Failure, nil},
+		{tHost, -1, Failure, nil},
 	}
 
-	prober := New()
+	prober := NewTCPSocketProber()
 	for i, tt := range tests {
 		t.Run(fmt.Sprintf("[%d] %s:%d", i, tt.host, tt.port), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)

@@ -1,5 +1,6 @@
 /*
 Copyright 2015 The Kubernetes Authors.
+Modified 2021 Windmill Engineering.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,7 +15,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package exec
+package prober
 
 import (
 	"context"
@@ -22,10 +23,9 @@ import (
 	"io"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"k8s.io/utils/exec"
-
-	"github.com/tilt-dev/probe/pkg/probe"
 )
 
 type FakeCmd struct {
@@ -122,28 +122,34 @@ func (f *fakeExecutor) LookPath(file string) (string, error) {
 	return file, nil
 }
 
+func TestNewExecProber(t *testing.T) {
+	prober := NewExecProber()
+	execProber := prober.(execProber)
+	assert.Equal(t, osExecRunner, execProber.runner)
+}
+
 func TestExec(t *testing.T) {
 	// NOTE(milas): this test case is faulty (and is in upstream k8s - the mock doesn't properly use the input)
 	// tenKilobyte := strings.Repeat("logs-123", 128*10)      // 8*128*10=10240 = 10KB of text.
 	// elevenKilobyte := strings.Repeat("logs-123", 8*128*11) // 8*128*11=11264 = 11KB of text.
 
 	tests := []struct {
-		expectedStatus probe.Result
+		expectedStatus Result
 		expectError    bool
 		input          string
 		output         string
 		err            error
 	}{
 		// Ok
-		{probe.Success, false, "OK", "OK", nil},
+		{Success, false, "OK", "OK", nil},
 		// Ok
-		{probe.Success, false, "OK", "OK", &fakeExitError{true, 0}},
+		{Success, false, "OK", "OK", &fakeExitError{true, 0}},
 		// Ok - truncated output
 		// {probe.Success, false, elevenKilobyte, tenKilobyte, nil},
 		// Run returns error
-		{probe.Unknown, true, "", "", fmt.Errorf("test error")},
+		{Unknown, true, "", "", fmt.Errorf("test error")},
 		// Unhealthy
-		{probe.Failure, false, "Fail", "", &fakeExitError{true, 1}},
+		{Failure, false, "Fail", "", &fakeExitError{true, 1}},
 	}
 	for i, test := range tests {
 		fake := FakeCmd{
