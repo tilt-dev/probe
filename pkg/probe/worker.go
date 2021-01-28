@@ -82,17 +82,17 @@ func NewWorker(p prober.Prober, opts ...WorkerOption) *Worker {
 //
 // It's loosely based (but simplified) on the k8s.io/kubernetes/pkg/kubelet/prober design.
 type Worker struct {
-	// probe is the actual logic that will be invoked to determine status.
+	// prober is the actual logic that will be invoked to determine status.
 	prober prober.Prober
 	// clock is used to create timers and facilitate easier unit testing.
 	clock clockwork.Clock
 	// mu guards mutable state that can be accessed from multiple goroutines (see docs on
 	// individual fields for which mu must be held before access).
 	mu sync.Mutex
-	// stopFunc is invoked when a running Worker instance is stopped to cancel the context.
+	// running is true when the worker has been started; otherwise, false.
 	//
 	// mu must be held before accessing.
-	stopFunc context.CancelFunc
+	running bool
 	// initialDelay is the amount of time before the probe is first executed.
 	initialDelay time.Duration
 	// period is the interval on which the probe is executed.
@@ -126,19 +126,17 @@ type Worker struct {
 
 // Run periodically executes a probe until stopped.
 //
-// The Worker can be stopped by explicitly calling Stop() or implicitly
-// via context cancellation.
+// The Worker can be stopped by cancelling the context.
 //
 // Calling Run() on an instance that is already running will result in
 // a panic.
 func (w *Worker) Run(ctx context.Context) {
 	w.mu.Lock()
-	if w.stopFunc != nil {
+	if w.running {
 		panic("prober is already running")
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	w.stopFunc = cancel
 
+	w.running = true
 	w.lastResult = prober.Unknown
 	w.resultRun = 0
 	// initial status is failure until a successful probe
@@ -153,22 +151,20 @@ func (w *Worker) Run(ctx context.Context) {
 		w.doProbe(ctx)
 		select {
 		case <-ctx.Done():
+			w.mu.Lock()
+			w.status = prober.Unknown
+			w.running = false
+			w.mu.Unlock()
 			return
 		case <-ticker.Chan():
 		}
 	}
 }
 
-// Stop halts further probe invocations. It is safe to call Stop()
-// more than once.
-func (w *Worker) Stop() {
+func (w *Worker) Running() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.stopFunc != nil {
-		w.stopFunc()
-		w.stopFunc = nil
-		w.status = prober.Unknown
-	}
+	return w.running
 }
 
 // Status returns the current probe result.
@@ -240,7 +236,7 @@ func (w *Worker) handleResult(probeResult probeResult) {
 	}
 
 	w.mu.Lock()
-	if w.stopFunc == nil || w.status == result {
+	if !w.running || w.status == result {
 		w.mu.Unlock()
 		return
 	}
