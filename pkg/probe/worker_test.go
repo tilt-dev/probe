@@ -48,9 +48,9 @@ func mockClock() (clockwork.FakeClock, WorkerOption) {
 
 func resultsChan() (chan probeResult, WorkerOption) {
 	results := make(chan probeResult)
-	opt := func(p *Worker) {
-		p.resultsChan = results
-	}
+	opt := WorkerOnProbeResult(func(result prober.Result, output string, err error) {
+		results <- probeResult{result, output, err}
+	})
 	return results, opt
 }
 
@@ -96,15 +96,45 @@ func TestNewProberOptions(t *testing.T) {
 	})
 
 	t.Run("WorkerOnStatusChange", func(t *testing.T) {
-		called := false
+		called := make(chan struct{}, 1)
 		statusFunc := func(status prober.Result, output string) {
-			called = true
+			called <- struct{}{}
 		}
 
-		w := NewWorker(testProbe, WorkerOnStatusChange(statusFunc))
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		w := NewWorker(testProbe, WorkerOnStatusChange(statusFunc), WorkerPeriod(10*time.Millisecond))
 		assert.NotNil(t, w.statusFunc)
-		w.statusFunc(prober.Success, "test output")
-		assert.True(t, called)
+		go w.Run(ctx)
+
+		select {
+		case <-called:
+			// test pass
+			break
+		case <-time.After(5 * time.Second):
+			t.Fatal("StatusChangedFunc was never called")
+		}
+	})
+
+	t.Run("WorkerOnProbeResult", func(t *testing.T) {
+		// resultsChan provides a channel wrapper using WorkerOnProbeResult
+		r, withResultsChan := resultsChan()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		w := NewWorker(testProbe, withResultsChan, WorkerPeriod(10*time.Millisecond))
+		assert.NotNil(t, w.resultFunc)
+		go w.Run(ctx)
+
+		select {
+		case <-r:
+			// test pass
+			break
+		case <-time.After(5 * time.Second):
+			t.Fatal("ResultFunc was never called")
+		}
 	})
 }
 
@@ -137,24 +167,22 @@ func TestInitialDelay(t *testing.T) {
 	assert.Equal(t, prober.Success, w.Status())
 }
 
-func sleepProbe(duration time.Duration) prober.ProberFunc {
-	return func(ctx context.Context) (prober.Result, string, error) {
+func TestTimeout(t *testing.T) {
+	results, withResultsChan := resultsChan()
+
+	var longRunningProbe prober.ProberFunc = func(ctx context.Context) (prober.Result, string, error) {
 		select {
-		case <-ctx.Done():
-			return prober.Unknown, "context done", nil
-		case <-time.After(duration):
+		// NOTE: this probe is intentionally ignores context.Done() to avoid a race condition between
+		// probe + worker seeing context cancellation first; it also simulates a poorly-behaving probe
+		// that doesn't respect the context
+		case <-time.After(5 * time.Minute):
 			return prober.Success, "sleep finished", nil
 		}
 	}
-}
 
-func TestTimeout(t *testing.T) {
-	_, withMockClock := mockClock()
-	results, withResultsChan := resultsChan()
+	w := NewWorker(longRunningProbe, withResultsChan, WorkerTimeout(5*time.Millisecond))
 
-	w := NewWorker(sleepProbe(5*time.Minute), withMockClock, withResultsChan, WorkerTimeout(5*time.Millisecond))
-
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go w.Run(ctx)
 
