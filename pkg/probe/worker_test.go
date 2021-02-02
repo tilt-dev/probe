@@ -122,8 +122,9 @@ func TestInitialDelay(t *testing.T) {
 		WorkerInitialDelay(1*time.Minute),
 		withMockClock)
 
-	go w.Run(context.Background())
-	defer w.Stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
 
 	c.BlockUntil(1)
 	assert.Equal(t, prober.Failure, w.Status())
@@ -153,26 +154,15 @@ func TestTimeout(t *testing.T) {
 
 	w := NewWorker(sleepProbe(5*time.Minute), withMockClock, withResultsChan, WorkerTimeout(5*time.Millisecond))
 
-	go w.Run(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
 
 	// ensure that a result was received but that it did NOT come from our probe
 	result := <-results
 	assert.Equal(t, prober.Failure, result.result)
 	assert.Equal(t, "", result.output)
 	assert.Equal(t, prober.Failure, w.Status())
-}
-
-func TestStop(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	w := NewWorker(sleepProbe(5 * time.Minute))
-	go w.Run(ctx)
-
-	w.Stop()
-
-	assert.Nil(t, w.stopFunc)
-	assert.Equal(t, prober.Unknown, w.Status())
 }
 
 func TestThresholds(t *testing.T) {
@@ -212,7 +202,9 @@ func TestThresholds(t *testing.T) {
 			staticProbe := &staticProbe{result: initialStatus}
 			w := NewWorker(staticProbe, opts...)
 
-			go w.Run(context.Background())
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go w.Run(ctx)
 
 			// wait for initial status to process
 			assert.Equal(t, probeResult{result: initialStatus}, <-results)
@@ -232,4 +224,48 @@ func TestThresholds(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRestart(t *testing.T) {
+	w := NewWorker(newStaticProbe(prober.Success, "", nil))
+	require.False(t, w.Running())
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		w.Run(ctx)
+		wg.Done()
+	}()
+
+	requireEventually(t, func() bool {
+		return w.Running()
+	}, 5*time.Second, "Worker is not running")
+
+	cancel()
+	wg.Wait()
+
+	require.False(t, w.Running())
+	assert.Equal(t, prober.Unknown, w.Status())
+
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	requireEventually(t, func() bool {
+		return w.Running()
+	}, 5*time.Second, "Worker is not running")
+}
+
+func requireEventually(t testing.TB, cond func() bool, timeout time.Duration, message string) {
+	t.Helper()
+	start := time.Now()
+	for time.Since(start) < timeout {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(message)
 }
