@@ -48,7 +48,7 @@ func mockClock() (clockwork.FakeClock, WorkerOption) {
 
 func resultsChan() (chan probeResult, WorkerOption) {
 	results := make(chan probeResult)
-	opt := WorkerOnProbeResult(func(result prober.Result, output string, err error) {
+	opt := WorkerOnProbeResult(func(result prober.Result, statusChanged bool, output string, err error) {
 		results <- probeResult{result, output, err}
 	})
 	return results, opt
@@ -64,7 +64,7 @@ func TestNewProberDefaults(t *testing.T) {
 	assert.Equal(t, DefaultProbeSuccessThreshold, w.successThreshold)
 	assert.Equal(t, DefaultProbeFailureThreshold, w.failureThreshold)
 	assert.Equal(t, DefaultInitialDelay, w.initialDelay)
-	assert.Nil(t, w.statusFunc)
+	assert.Nil(t, w.resultFunc)
 	assert.Equal(t, w.Status(), prober.Unknown)
 }
 
@@ -95,28 +95,6 @@ func TestNewProberOptions(t *testing.T) {
 		assert.Equal(t, 99, w.failureThreshold)
 	})
 
-	t.Run("WorkerOnStatusChange", func(t *testing.T) {
-		called := make(chan struct{}, 1)
-		statusFunc := func(status prober.Result, output string) {
-			called <- struct{}{}
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		w := NewWorker(testProbe, WorkerOnStatusChange(statusFunc), WorkerPeriod(10*time.Millisecond))
-		assert.NotNil(t, w.statusFunc)
-		go w.Run(ctx)
-
-		select {
-		case <-called:
-			// test pass
-			break
-		case <-time.After(5 * time.Second):
-			t.Fatal("StatusChangedFunc was never called")
-		}
-	})
-
 	t.Run("WorkerOnProbeResult", func(t *testing.T) {
 		// resultsChan provides a channel wrapper using WorkerOnProbeResult
 		r, withResultsChan := resultsChan()
@@ -141,14 +119,16 @@ func TestNewProberOptions(t *testing.T) {
 func TestInitialDelay(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
-	statusFunc := func(status prober.Result, output string) {
-		wg.Done()
+	resultFunc := func(status prober.Result, statusChanged bool, output string, err error) {
+		if statusChanged {
+			wg.Done()
+		}
 	}
 
 	c, withMockClock := mockClock()
 
 	w := NewWorker(newStaticProbe(prober.Success, "", nil),
-		WorkerOnStatusChange(statusFunc),
+		WorkerOnProbeResult(resultFunc),
 		WorkerInitialDelay(1*time.Minute),
 		withMockClock)
 
@@ -157,10 +137,10 @@ func TestInitialDelay(t *testing.T) {
 	go w.Run(ctx)
 
 	c.BlockUntil(1)
-	assert.Equal(t, prober.Failure, w.Status())
+	assert.Equal(t, prober.Unknown, w.Status())
 
 	c.Advance(30 * time.Second)
-	assert.Equal(t, prober.Failure, w.Status())
+	assert.Equal(t, prober.Unknown, w.Status())
 
 	c.Advance(30 * time.Second)
 	wg.Wait()
@@ -190,7 +170,7 @@ func TestTimeout(t *testing.T) {
 	result := <-results
 	assert.Equal(t, prober.Failure, result.result)
 	assert.Equal(t, "", result.output)
-	assert.Equal(t, prober.Failure, w.Status())
+	assert.Equal(t, prober.Unknown, w.Status())
 }
 
 func TestThresholds(t *testing.T) {
