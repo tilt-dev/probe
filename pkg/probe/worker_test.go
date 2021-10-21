@@ -2,7 +2,9 @@ package probe
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,9 +154,8 @@ func TestTimeout(t *testing.T) {
 
 	var longRunningProbe prober.ProberFunc = func(ctx context.Context) (prober.Result, string, error) {
 		select {
-		// NOTE: this probe is intentionally ignores context.Done() to avoid a race condition between
-		// probe + worker seeing context cancellation first; it also simulates a poorly-behaving probe
-		// that doesn't respect the context
+		case <-ctx.Done():
+			return prober.Failure, "context done", ctx.Err()
 		case <-time.After(5 * time.Minute):
 			return prober.Success, "sleep finished", nil
 		}
@@ -170,7 +171,54 @@ func TestTimeout(t *testing.T) {
 	result := <-results
 	assert.Equal(t, prober.Failure, result.result)
 	assert.Equal(t, "", result.output)
+	assert.EqualError(t, result.err, context.DeadlineExceeded.Error())
 	assert.Equal(t, prober.Unknown, w.Status())
+}
+
+func TestProbeExecutionLongerThanInterval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode")
+	}
+
+	results, withResultsChan := resultsChan()
+
+	// this test ensures that even if a probe does not respect the timeout (e.g. due to a bug), the
+	// worker won't schedule overlapping invocations of it
+	var activeProbeCount int64
+	var longRunningProbe prober.ProberFunc = func(ctx context.Context) (prober.Result, string, error) {
+		cur := atomic.AddInt64(&activeProbeCount, 1)
+		if cur != 1 {
+			return prober.Failure, "", fmt.Errorf("bad probe count: %d", cur)
+		}
+		defer func() {
+			atomic.AddInt64(&activeProbeCount, -1)
+		}()
+		select {
+		case <-ctx.Done():
+			return prober.Failure, "context done", ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+			return prober.Success, "sleep finished", nil
+		}
+	}
+
+	w := NewWorker(longRunningProbe, withResultsChan, WorkerPeriod(1*time.Millisecond), WorkerTimeout(10*time.Second))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go w.Run(ctx)
+
+	// run probes that take 20ms to return on a 1ms interval for 500ms and ensure that no concurrent executions are seen
+	timeout := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case result := <-results:
+			assert.Equal(t, prober.Success, result.result)
+			assert.Equal(t, "sleep finished", result.output)
+			assert.NoError(t, result.err)
+		case <-timeout:
+			return
+		}
+	}
 }
 
 func TestThresholds(t *testing.T) {

@@ -8,6 +8,9 @@ test:
 tidy:
 	go mod tidy
 
+fmt:
+	goimports -w -l -local github.com/tilt-dev/probe pkg/
+
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCILINT)
 	$(GOPATH)/bin/golangci-lint run --verbose
