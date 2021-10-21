@@ -3,7 +3,12 @@ GOPATH = $(shell go env GOPATH)
 .PHONY: generate test vendor
 
 test:
-	go test -timeout 30s -v ./...
+ifneq ($(CIRCLECI),true)
+		go test -timeout 30s -v ./...
+else
+		mkdir -p test-results
+		gotestsum --format standard-quiet --junitfile test-results/unit-tests.xml -- ./... -timeout 30s
+endif
 
 tidy:
 	go mod tidy
