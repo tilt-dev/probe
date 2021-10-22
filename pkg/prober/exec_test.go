@@ -20,112 +20,22 @@ package prober
 import (
 	"context"
 	"fmt"
-	"io"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
-	"k8s.io/utils/exec"
+	"github.com/stretchr/testify/require"
 )
-
-type FakeCmd struct {
-	out    []byte
-	stdout []byte
-	err    error
-	writer io.Writer
-}
-
-func (f *FakeCmd) Run() error {
-	return nil
-}
-
-func (f *FakeCmd) CombinedOutput() ([]byte, error) {
-	return f.out, f.err
-}
-
-func (f *FakeCmd) Output() ([]byte, error) {
-	return f.stdout, f.err
-}
-
-func (f *FakeCmd) SetDir(dir string) {}
-
-func (f *FakeCmd) SetStdin(in io.Reader) {}
-
-func (f *FakeCmd) SetStdout(out io.Writer) {
-	f.writer = out
-}
-
-func (f *FakeCmd) SetStderr(out io.Writer) {
-	f.writer = out
-}
-
-func (f *FakeCmd) SetEnv(env []string) {}
-
-func (f *FakeCmd) Stop() {}
-
-func (f *FakeCmd) Start() error {
-	if f.writer != nil {
-		f.writer.Write(f.out)
-		return f.err
-	}
-	return f.err
-}
-
-func (f *FakeCmd) Wait() error { return nil }
-
-func (f *FakeCmd) StdoutPipe() (io.ReadCloser, error) {
-	return nil, nil
-}
-
-func (f *FakeCmd) StderrPipe() (io.ReadCloser, error) {
-	return nil, nil
-}
-
-type fakeExitError struct {
-	exited     bool
-	statusCode int
-}
-
-func (f *fakeExitError) String() string {
-	return f.Error()
-}
-
-func (f *fakeExitError) Error() string {
-	return "fake exit"
-}
-
-func (f *fakeExitError) Exited() bool {
-	return f.exited
-}
-
-func (f *fakeExitError) ExitStatus() int {
-	return f.statusCode
-}
-
-var _ exec.ExitError = &fakeExitError{}
-
-type fakeExecutor struct {
-	mock.Mock
-}
-
-func (f *fakeExecutor) Command(cmd string, args ...string) exec.Cmd {
-	callArgs := f.Called(cmd, args)
-	return callArgs.Get(0).(exec.Cmd)
-}
-
-func (f *fakeExecutor) CommandContext(ctx context.Context, cmd string, args ...string) exec.Cmd {
-	callArgs := f.Called(ctx, cmd, args)
-	return callArgs.Get(0).(exec.Cmd)
-}
-
-func (f *fakeExecutor) LookPath(file string) (string, error) {
-	return file, nil
-}
 
 func TestNewExecProber(t *testing.T) {
 	prober := NewExecProber()
 	execProber := prober.(execProber)
-	assert.Equal(t, osExecRunner, execProber.runner)
+	assert.NotNil(t, execProber.excer)
 }
 
 func TestExec(t *testing.T) {
@@ -138,30 +48,24 @@ func TestExec(t *testing.T) {
 		expectError    bool
 		input          string
 		output         string
-		err            error
+		exitCode       int
+		execErr        error
 	}{
 		// Ok
-		{Success, false, "OK", "OK", nil},
-		// Ok
-		{Success, false, "OK", "OK", &fakeExitError{true, 0}},
+		{Success, false, "OK", "OK", 0, nil},
 		// Ok - truncated output
 		// {probe.Success, false, elevenKilobyte, tenKilobyte, nil},
 		// Run returns error
-		{Unknown, true, "", "", fmt.Errorf("test error")},
+		{Unknown, true, "", "", 0, fmt.Errorf("test error")},
 		// Unhealthy
-		{Failure, false, "Fail", "", &fakeExitError{true, 1}},
+		{Failure, false, "Fail", "", 1, nil},
 	}
 	for i, test := range tests {
-		fake := FakeCmd{
-			out: []byte(test.output),
-			err: test.err,
+		e := func(ctx context.Context, name string, args ...string) (int, []byte, error) {
+			return test.exitCode, []byte(test.output), test.execErr
 		}
 
-		mockExecutor := &fakeExecutor{}
-		// there's no clean way to assert on the created command other than a mock
-		mockExecutor.On("CommandContext", mock.Anything, "foo", []string{"arg1", "arg2"}).Return(&fake)
-
-		prober := execProber{runner: mockExecutor}
+		prober := execProber{excer: e}
 
 		status, output, err := prober.Probe(context.Background(), "foo", "arg1", "arg2")
 		if status != test.expectedStatus {
@@ -176,7 +80,38 @@ func TestExec(t *testing.T) {
 		if test.output != output {
 			t.Errorf("[%d] expected %s, got %s", i, test.output, output)
 		}
+	}
+}
 
-		mockExecutor.AssertExpectations(t)
+func TestRealExecer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test in short mode")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("test not supported on Windows")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	script := `sleep 60 & echo $!`
+	exitCode, out, err := realExecer(ctx, "sh", "-c", script)
+
+	assert.NoError(t, err)
+	assert.Equal(t, -1, exitCode)
+
+	// OS can take a moment to process the SIGKILL to the process group
+	time.Sleep(250 * time.Millisecond)
+
+	output := strings.TrimSpace(string(out))
+	if assert.NotEmpty(t, output) {
+		childPid, err := strconv.Atoi(output)
+		require.NoError(t, err, "Couldn't get child PID from stdout/stderr: %s", output)
+		// os.FindProcess is a no-op on Unix-like systems and always succeeds; need to send signal 0 to probe it
+		proc, _ := os.FindProcess(childPid)
+		err = proc.Signal(syscall.Signal(0))
+		if !assert.Equal(t, os.ErrProcessDone, err, "Child process was still running") {
+			_ = proc.Kill()
+		}
 	}
 }
