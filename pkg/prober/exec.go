@@ -23,6 +23,8 @@ import (
 	"syscall"
 
 	"k8s.io/klog/v2"
+
+	"github.com/tilt-dev/probe/internal/procutil"
 )
 
 const (
@@ -69,7 +71,8 @@ var realExecer = func(ctx context.Context, name string, args ...string) (int, []
 	// N.B. we don't use CommandContext because we want slightly different semantics to kill the
 	// 	entire process group without introducing a race between us and Go stdlib
 	cmd := exec.Command(name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{}
+	procutil.SetOptNewProcessGroup(cmd.SysProcAttr)
 
 	// we want the (partial) I/O even if we kill the process group due to context deadline exceeded
 	// so they're managed manually vs using something like CombinedOutput()
@@ -104,9 +107,7 @@ var realExecer = func(ctx context.Context, name string, args ...string) (int, []
 
 	select {
 	case <-ctx.Done():
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
+		procutil.KillProcessGroup(cmd)
 		return -1, output.Bytes(), nil
 	case err := <-procExitCh:
 		if err != nil {
